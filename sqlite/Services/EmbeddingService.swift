@@ -3,13 +3,11 @@
 //  sqlite
 //
 //  Created by Mordecai Mengesteab on 5/27/25.
-//
-//
+
 //  BertTokenizer.swift
 //  sqlite
 //
 //  Adapted from HuggingFace CoreMLBert
-//
 
 import Foundation
 import CoreML
