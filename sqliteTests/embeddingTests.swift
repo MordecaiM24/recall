@@ -49,21 +49,6 @@ class EmbeddingServiceTests: XCTestCase {
         XCTAssertGreaterThan(result.attentionMask.prefix(10).reduce(0, +), 0, "Should have some real tokens")
     }
     
-//    func testLongTextTruncation() {
-//        // Logic: Very long text should be truncated gracefully without crashing
-//        // Common failure: tokenizer fails on long inputs or produces wrong dimensions
-//        let longText = String(repeating: "word ", count: 1000) // way over 512 tokens
-//        let tokenizer = try! BertTokenizer()
-//        let result = try! tokenizer.encode(text: longText, maxLength: 512)
-//        
-//        XCTAssertEqual(result.inputIds.count, 512, "Should truncate to max length")
-//        XCTAssertEqual(result.attentionMask.count, 512, "Attention mask should match")
-//        
-//        // All tokens should be real (no truncation in middle of attention mask)
-//        let realTokenCount = result.attentionMask.reduce(0, +)
-//        XCTAssertEqual(realTokenCount, 512, "Should use all available tokens for long text")
-//    }
-    
     func testUnicodeTokenization() {
         // Logic: Unicode should be handled without crashing or corruption
         // Common failure: tokenizer mangles unicode or produces garbage tokens
