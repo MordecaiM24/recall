@@ -34,7 +34,7 @@ class SQLiteServiceTests: XCTestCase {
     func testDatabaseSetup() {
         // if we got here without crashing, setup worked
         XCTAssertNotNil(sqliteService)
-        print("✓ database setup test passed")
+        print("database setup test passed")
     }
     
     // MARK: - Document Tests
@@ -49,27 +49,27 @@ class SQLiteServiceTests: XCTestCase {
         
         // test insert
         let documentId = try sqliteService.insertDocument(title: title, content: content, embedding: embedding)
-        XCTAssertGreaterThan(documentId, 0, "document id should be positive")
-        print("✓ inserted document with id: \(documentId)")
+        XCTAssertFalse(documentId.isEmpty, "document id should not be empty")
+        print("inserted document with id: \(documentId)")
         
         // test find by id
         let fetchedDoc = try sqliteService.findDocument(id: documentId)
         XCTAssertNotNil(fetchedDoc, "should be able to fetch inserted document")
         XCTAssertEqual(fetchedDoc?.title, title)
         XCTAssertEqual(fetchedDoc?.content, content)
-        print("✓ fetched document by id")
+        print("fetched document by id")
         
         // test find all
         let allDocs = try sqliteService.findAllDocuments()
         XCTAssertGreaterThanOrEqual(allDocs.count, 1, "should have at least one document")
-        print("✓ found all documents: \(allDocs.count)")
+        print("found all documents: \(allDocs.count)")
         
         // test vector search
         let queryEmbedding = try await embeddingService.embed(text: "test content")
         let searchResults = try sqliteService.searchDocuments(queryEmbedding: queryEmbedding, limit: 5)
         XCTAssertGreaterThan(searchResults.count, 0, "should find at least one result")
         XCTAssertEqual(searchResults[0].document.id, documentId, "should find our inserted document")
-        print("✓ vector search works, distance: \(searchResults[0].distance)")
+        print("vector search works, distance: \(searchResults[0].distance)")
     }
     
     // MARK: - Message Tests
@@ -91,8 +91,8 @@ class SQLiteServiceTests: XCTestCase {
         
         // test insert
         let messageId = try sqliteService.insertMessage(message)
-        XCTAssertGreaterThan(messageId, 0)
-        print("✓ inserted message with id: \(messageId)")
+        XCTAssertFalse(messageId.isEmpty, "message id should not be empty")
+        print("inserted message with id: \(messageId)")
         
         // test find by id
         let fetchedMessage = try sqliteService.findMessage(id: messageId)
@@ -101,12 +101,12 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertEqual(fetchedMessage?.text, "hey, how's it going? 🚀")
         XCTAssertEqual(fetchedMessage?.isFromMe, true)
         XCTAssertEqual(fetchedMessage?.service, "iMessage")
-        print("✓ fetched message by id")
+        print("fetched message by id")
         
         // test content embedding
         let embedding = try await embeddingService.embed(text: message.text)
-        try sqliteService.insertContentEmbedding(type: .message, contentId: messageId, embedding: embedding)
-        print("✓ inserted message embedding")
+        try sqliteService.insertChunk(parentId: messageId, contentType: .message, chunkIndex: 0, text: message.text, embedding: embedding)
+        print("inserted message embedding")
     }
     
     // MARK: - Email Tests
@@ -129,8 +129,8 @@ class SQLiteServiceTests: XCTestCase {
         
         // test insert
         let emailId = try sqliteService.insertEmail(email)
-        XCTAssertGreaterThan(emailId, 0)
-        print("✓ inserted email with id: \(emailId)")
+        XCTAssertFalse(emailId.isEmpty, "email id should not be empty")
+        print("inserted email with id: \(emailId)")
         
         // test find by id
         let fetchedEmail = try sqliteService.findEmail(id: emailId)
@@ -139,12 +139,12 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertEqual(fetchedEmail?.subject, "three tips to get you started")
         XCTAssertEqual(fetchedEmail?.labels.count, 2)
         XCTAssertTrue(fetchedEmail?.labels.contains("INBOX") ?? false)
-        print("✓ fetched email by id")
+        print("fetched email by id")
         
         // test content embedding
         let embedding = try await embeddingService.embed(text: email.content)
-        try sqliteService.insertContentEmbedding(type: .email, contentId: emailId, embedding: embedding)
-        print("✓ inserted email embedding")
+        try sqliteService.insertChunk(parentId: emailId, contentType: .email, chunkIndex: 0, text: email.content, embedding: embedding)
+        print("inserted email embedding")
     }
     
     // MARK: - Note Tests
@@ -165,8 +165,8 @@ class SQLiteServiceTests: XCTestCase {
         
         // test insert
         let noteId = try sqliteService.insertNote(note)
-        XCTAssertGreaterThan(noteId, 0)
-        print("✓ inserted note with id: \(noteId)")
+        XCTAssertFalse(noteId.isEmpty, "note id should not be empty")
+        print("inserted note with id: \(noteId)")
         
         // test find by id
         let fetchedNote = try sqliteService.findNote(id: noteId)
@@ -175,12 +175,12 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertEqual(fetchedNote?.title, "2100-(350+200+320+540)‎ = 850")
         XCTAssertEqual(fetchedNote?.folder, "Notes")
         XCTAssertNotNil(fetchedNote?.created)
-        print("✓ fetched note by id")
+        print("fetched note by id")
         
         // test content embedding
         let embedding = try await embeddingService.embed(text: note.content)
-        try sqliteService.insertContentEmbedding(type: .note, contentId: noteId, embedding: embedding)
-        print("✓ inserted note embedding")
+        try sqliteService.insertChunk(parentId: noteId, contentType: .note, chunkIndex: 0, text: note.content, embedding: embedding)
+        print("inserted note embedding")
     }
     
     // MARK: - Unified Search Tests
@@ -201,7 +201,7 @@ class SQLiteServiceTests: XCTestCase {
         )
         let msgId = try sqliteService.insertMessage(message)
         let msgEmbedding = try await embeddingService.embed(text: message.text)
-        try sqliteService.insertContentEmbedding(type: .message, contentId: msgId, embedding: msgEmbedding)
+        try sqliteService.insertChunk(parentId: msgId, contentType: .message, chunkIndex: 0, text: message.text, embedding: msgEmbedding)
         
         let email = EmailData(
             id: nil, originalId: "email123", threadId: "thread123",
@@ -211,19 +211,19 @@ class SQLiteServiceTests: XCTestCase {
         )
         let emailId = try sqliteService.insertEmail(email)
         let emailEmbedding = try await embeddingService.embed(text: email.content)
-        try sqliteService.insertContentEmbedding(type: .email, contentId: emailId, embedding: emailEmbedding)
+        try sqliteService.insertChunk(parentId: emailId, contentType: .email, chunkIndex: 0, text: email.content, embedding: emailEmbedding)
         
         // test unified search
         let queryEmbedding = try await embeddingService.embed(text: "machine learning artificial intelligence")
         let results = try sqliteService.searchAllContent(queryEmbedding: queryEmbedding, limit: 10)
         
         XCTAssertGreaterThan(results.count, 0, "should find results")
-        print("✓ unified search found \(results.count) results")
+        print("unified search found \(results.count) results")
         
         // verify we get different content types
         let contentTypes = Set(results.map { $0.type })
         XCTAssertGreaterThan(contentTypes.count, 1, "should find multiple content types")
-        print("✓ found content types: \(contentTypes.map { $0.rawValue })")
+        print("found content types: \(contentTypes.map { $0.rawValue })")
         
         // test filtering by content type
         let emailOnlyResults = try sqliteService.searchAllContent(
@@ -232,7 +232,7 @@ class SQLiteServiceTests: XCTestCase {
             contentTypes: [.email]
         )
         XCTAssertTrue(emailOnlyResults.allSatisfy { $0.type == .email }, "should only return emails")
-        print("✓ content type filtering works")
+        print("content type filtering works")
     }
     
     // MARK: - Chunk Tests
@@ -253,16 +253,14 @@ class SQLiteServiceTests: XCTestCase {
         
         for (index, chunkText) in chunks.enumerated() {
             let chunkEmbedding = try await embeddingService.embed(text: chunkText)
-            let chunkId = try sqliteService.insertChunk(
-                type: .document,
-                contentId: docId,
-                chunkIndex: index,
+            try sqliteService.insertChunk(
+                parentId: docId,
+                contentType: .document,
+                chunkIndex: index + 1, // start from 1 since 0 is full content
                 text: chunkText,
-                startOffset: index * 20,
-                endOffset: (index + 1) * 20 + 10
+                embedding: chunkEmbedding
             )
-            XCTAssertGreaterThan(chunkId, 0)
-            print("✓ inserted chunk \(index) with id: \(chunkId)")
+            print("inserted chunk \(index + 1) for document \(docId)")
         }
     }
     
@@ -271,22 +269,22 @@ class SQLiteServiceTests: XCTestCase {
     func testErrorHandling() {
         // test finding non-existent records (these return nil, don't throw)
         do {
-            let nonExistentDoc = try sqliteService.findDocument(id: 99999)
+            let nonExistentDoc = try sqliteService.findDocument(id: "nonexistent-uuid")
             XCTAssertNil(nonExistentDoc, "should return nil for non-existent document")
-            print("✓ properly handles missing document")
+            print("properly handles missing document")
         } catch {
             XCTFail("findDocument should not throw for missing records: \(error)")
         }
         
         do {
-            let nonExistentMessage = try sqliteService.findMessage(id: 99999)
+            let nonExistentMessage = try sqliteService.findMessage(id: "nonexistent-uuid")
             XCTAssertNil(nonExistentMessage, "should return nil for non-existent message")
-            print("✓ properly handles missing message")
+            print("properly handles missing message")
         } catch {
             XCTFail("findMessage should not throw for missing records: \(error)")
         }
         
-        // test with potentially problematic data (this might not throw either, but good to verify)
+        // test with potentially problematic data
         let invalidMessage = MessageData(
             id: nil, originalId: 1, text: "", date: "invalid-date",
             timestamp: 0, isFromMe: false, isSent: false, service: "",
@@ -295,14 +293,14 @@ class SQLiteServiceTests: XCTestCase {
         
         do {
             _ = try sqliteService.insertMessage(invalidMessage)
-            print("✓ handled potentially invalid message data")
+            print("handled potentially invalid message data")
         } catch {
-            print("✓ caught error for invalid message: \(error)")
+            print("caught error for invalid message: \(error)")
         }
         
         // test actual error condition - invalid sql should throw
         XCTAssertThrowsError(try sqliteService.execute("INVALID SQL STATEMENT")) { error in
-            print("✓ properly throws error for invalid sql: \(error)")
+            print("properly throws error for invalid sql: \(error)")
         }
     }
     
@@ -312,7 +310,7 @@ class SQLiteServiceTests: XCTestCase {
         let startTime = CFAbsoluteTimeGetCurrent()
         
         // insert multiple messages
-        var messageIds: [Int32] = []
+        var messageIds: [String] = []
         for i in 1...50 {
             let message = MessageData(
                 id: nil, originalId: Int32(i), text: "test message \(i) with some content",
@@ -323,13 +321,13 @@ class SQLiteServiceTests: XCTestCase {
             let msgId = try sqliteService.insertMessage(message)
             messageIds.append(msgId)
             
-            // insert embedding
+            // insert embedding separately
             let embedding = try await embeddingService.embed(text: message.text)
-            try sqliteService.insertContentEmbedding(type: .message, contentId: msgId, embedding: embedding)
+            try sqliteService.insertChunk(parentId: msgId, contentType: .message, chunkIndex: 0, text: message.text, embedding: embedding)
         }
         
         let insertTime = CFAbsoluteTimeGetCurrent() - startTime
-        print("✓ inserted 50 messages with embeddings in \(String(format: "%.2f", insertTime))s")
+        print("inserted 50 messages with embeddings in \(String(format: "%.2f", insertTime))s")
         
         // test bulk search
         let searchStart = CFAbsoluteTimeGetCurrent()
@@ -338,7 +336,7 @@ class SQLiteServiceTests: XCTestCase {
         let searchTime = CFAbsoluteTimeGetCurrent() - searchStart
         
         XCTAssertGreaterThan(searchResults.count, 0)
-        print("✓ searched \(searchResults.count) results in \(String(format: "%.3f", searchTime))s")
+        print("searched \(searchResults.count) results in \(String(format: "%.3f", searchTime))s")
     }
     
     // MARK: - Vector Relevance Tests
@@ -363,7 +361,7 @@ class SQLiteServiceTests: XCTestCase {
             embedding: irrelevantEmbedding
         )
         
-        print("✓ inserted relevant doc id: \(relevantDocId), irrelevant doc id: \(irrelevantDocId)")
+        print("inserted relevant doc id: \(relevantDocId), irrelevant doc id: \(irrelevantDocId)")
         
         // search for something clearly related to the first document
         let queryEmbedding = try await embeddingService.embed(text: "artificial intelligence machine learning")
@@ -381,7 +379,7 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertLessThan(relevantResult!.distance, irrelevantResult!.distance,
                          "relevant document should have lower distance (higher relevance)")
         
-        print("✓ relevance ranking works:")
+        print("relevance ranking works:")
         print("  - relevant distance: \(String(format: "%.4f", relevantResult!.distance))")
         print("  - irrelevant distance: \(String(format: "%.4f", irrelevantResult!.distance))")
         
@@ -395,7 +393,7 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertLessThan(relevantUnified!.distance, irrelevantUnified!.distance,
                          "relevance ranking should work in unified search too")
         
-        print("✓ unified search relevance ranking works")
+        print("unified search relevance ranking works")
     }
     
     func testCrossContentTypeRelevance() async throws {
@@ -418,7 +416,7 @@ class SQLiteServiceTests: XCTestCase {
         )
         let msgId = try sqliteService.insertMessage(message)
         let msgEmbedding = try await embeddingService.embed(text: message.text)
-        try sqliteService.insertContentEmbedding(type: .message, contentId: msgId, embedding: msgEmbedding)
+        try sqliteService.insertChunk(parentId: msgId, contentType: .message, chunkIndex: 0, text: message.text, embedding: msgEmbedding)
         
         // email with very different content
         let email = EmailData(
@@ -429,7 +427,7 @@ class SQLiteServiceTests: XCTestCase {
         )
         let emailId = try sqliteService.insertEmail(email)
         let emailEmbedding = try await embeddingService.embed(text: email.content)
-        try sqliteService.insertContentEmbedding(type: .email, contentId: emailId, embedding: emailEmbedding)
+        try sqliteService.insertChunk(parentId: emailId, contentType: .email, chunkIndex: 0, text: email.content, embedding: emailEmbedding)
         
         // search for AI-related content
         let queryEmbedding = try await embeddingService.embed(text: "artificial intelligence research")
@@ -452,7 +450,7 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertLessThan(msgResult!.distance, emailResult!.distance,
                          "AI message should rank higher than dinner email")
         
-        print("✓ cross-content-type relevance ranking works:")
+        print("cross-content-type relevance ranking works:")
         print("  - document distance: \(String(format: "%.4f", docResult!.distance))")
         print("  - message distance: \(String(format: "%.4f", msgResult!.distance))")
         print("  - email distance: \(String(format: "%.4f", emailResult!.distance))")
@@ -467,7 +465,7 @@ class SQLiteServiceTests: XCTestCase {
         )
         let msgId = try sqliteService.insertMessage(message)
         let embedding = try await embeddingService.embed(text: message.text)
-        try sqliteService.insertContentEmbedding(type: .message, contentId: msgId, embedding: embedding)
+        try sqliteService.insertChunk(parentId: msgId, contentType: .message, chunkIndex: 0, text: message.text, embedding: embedding)
         
         let email = EmailData(
             id: nil, originalId: "email1", threadId: "thread1", subject: "test",
@@ -477,7 +475,7 @@ class SQLiteServiceTests: XCTestCase {
         )
         let emailId = try sqliteService.insertEmail(email)
         let emailEmbedding = try await embeddingService.embed(text: email.content)
-        try sqliteService.insertContentEmbedding(type: .email, contentId: emailId, embedding: emailEmbedding)
+        try sqliteService.insertChunk(parentId: emailId, contentType: .email, chunkIndex: 0, text: email.content, embedding: emailEmbedding)
         
         // test unified search to ensure date parsing doesn't crash
         let queryEmbedding = try await embeddingService.embed(text: "test")
@@ -486,7 +484,32 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertGreaterThan(results.count, 0)
         for result in results {
             XCTAssertNotNil(result.date, "date should be parsed successfully")
-            print("✓ parsed date for \(result.type.rawValue): \(result.date)")
+            print("parsed date for \(result.type.rawValue): \(result.date)")
         }
+    }
+    
+    // MARK: - UUID Tests
+    
+    func testUUIDGeneration() async throws {
+        // insert multiple items to verify unique UUIDs
+        let message1 = MessageData(
+            id: nil, originalId: 1, text: "first message", date: "2024-01-01 12:00:00",
+            timestamp: 123456789, isFromMe: true, isSent: true, service: "iMessage",
+            contact: nil, chatName: "", chatId: "+1234567890"
+        )
+        let message2 = MessageData(
+            id: nil, originalId: 2, text: "second message", date: "2024-01-01 12:01:00",
+            timestamp: 123456890, isFromMe: false, isSent: true, service: "iMessage",
+            contact: nil, chatName: "", chatId: "+1234567890"
+        )
+        
+        let msgId1 = try sqliteService.insertMessage(message1)
+        let msgId2 = try sqliteService.insertMessage(message2)
+        
+        XCTAssertNotEqual(msgId1, msgId2, "UUIDs should be unique")
+        XCTAssertTrue(msgId1.contains("-"), "should be valid UUID format")
+        XCTAssertTrue(msgId2.contains("-"), "should be valid UUID format")
+        
+        print("UUID generation works: \(msgId1) != \(msgId2)")
     }
 }

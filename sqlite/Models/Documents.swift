@@ -8,13 +8,13 @@
 import Foundation
 
 struct Document: Identifiable, Hashable {
-    let id: Int32
+    let id: String
     let title: String
     let content: String
     let createdAt: Date
     let embedding: [Float]?
     
-    init(id: Int32, title: String, content: String, createdAt: Date = Date(), embedding: [Float]? = nil) {
+    init(id: String, title: String, content: String, createdAt: Date = Date(), embedding: [Float]? = nil) {
         self.id = id
         self.title = title
         self.content = content

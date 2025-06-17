@@ -134,7 +134,7 @@ final class DocumentService: ObservableObject {
     
     // MARK: - Document Retrieval
     
-    func getDocument(id: Int32) -> Document? {
+    func getDocument(id: String) -> Document? {
         return documents.first { $0.id == id }
     }
     

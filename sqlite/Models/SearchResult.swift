@@ -11,7 +11,7 @@ struct SearchResult: Identifiable {
     let document: Document
     let distance: Double
     
-    var id: Int32 { document.id }
+    var id: String { document.id }
 
     var similarity: Double {
         // inverse relationship between distance and similarity
