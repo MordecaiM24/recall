@@ -28,7 +28,10 @@ let defaultDBPath: String = {
 }()
 
 /// schema version to detect breaking changes
-let schemaVersion = 2
-// 2. bumped for new document tables
+/// This *really* should've been updated last commit but live and learn
+let schemaVersion = 3
+/// 3. bumped for refactor of *all* embeddings in chunk table,
+/// addition of message, email, and notes document types. 
+/// 2. bumped for new document tables
 let databaseVersionKey = "dbSchemaVersion"
 

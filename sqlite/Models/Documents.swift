@@ -12,14 +12,12 @@ struct Document: Identifiable, Hashable {
     let title: String
     let content: String
     let createdAt: Date
-    let embedding: [Float]?
     
-    init(id: String, title: String, content: String, createdAt: Date = Date(), embedding: [Float]? = nil) {
+    init(id: String, title: String, content: String, createdAt: Date = Date()) {
         self.id = id
         self.title = title
         self.content = content
         self.createdAt = createdAt
-        self.embedding = embedding
     }
 }
 

@@ -16,22 +16,6 @@ enum SQLiteError: Error {
     case initExtension(message: String)
 }
 
-enum ContentType: String, CaseIterable {
-    case document = "document"
-    case message = "message"
-    case email = "email"
-    case note = "note"
-    
-    var tableName: String {
-        switch self {
-        case .document: return "Document"
-        case .message: return "Message"
-        case .email: return "Email"
-        case .note: return "Note"
-        }
-    }
-}
-
 // unified search result
 struct UnifiedSearchResult {
     let type: ContentType
