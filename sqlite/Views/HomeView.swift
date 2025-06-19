@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import FoundationModels
 
 struct ChatMessage: Identifiable {
     let id = UUID()
@@ -28,6 +29,8 @@ struct HomeView: View {
     @State private var inputText = ""
     @State private var isLoading = false
     @FocusState private var isTextFieldFocused: Bool
+    
+    private var lmSession = LanguageModelSession()
     
     var body: some View {
         NavigationView {
@@ -120,38 +123,61 @@ struct HomeView: View {
     }
     
     private func sendMessage() {
-        let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedInput.isEmpty else { return }
+        let query = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
         
-        // add user message
-        let userMessage = ChatMessage(content: trimmedInput, isUser: true)
-        messages.append(userMessage)
-        
-        // clear input and dismiss keyboard
+        messages.append(.init(content: query, isUser: true))
         inputText = ""
         isTextFieldFocused = false
         isLoading = true
         
-        // simulate ai response with search
         Task {
-            let searchResults = await contentService.search(query: trimmedInput, limit: 5)
+            let results = await contentService.search(query: query, limit: 5)
             
-            await MainActor.run {
-                let responseContent: String
-                let sources: [UnifiedContent]?
+            // basic response
+//            let baseContent: String
+//            if results.isEmpty {
+//                baseContent = "couldn't find any content for '\(query)'. add some docs or notes first."
+//            } else {
+//                baseContent = "found \(results.count) items for '\(query)':"
+//            }
+//            await MainActor.run {
+//                messages.append(.init(content: baseContent, isUser: false, sources: results))
+//            }
+            
+            // if there are results, run summarization & reranking
+            if !results.isEmpty {
+                // prepare text
+                let combined = results.map { "\($0.displayTitle): \($0.snippet)" }.joined(separator: "\n")
                 
-                if searchResults.isEmpty {
-                    responseContent = "I couldn't find any content related to '\(trimmedInput)'. Try adding some documents, messages, emails, or notes first."
-                    sources = nil
-                } else {
-                    responseContent = "I found \(searchResults.count) relevant items about '\(trimmedInput)'. Here's what I discovered:"
-                    sources = searchResults
-                }
+                // summarization
+                do {
+                    let sumPrompt = "summarize the following items concisely:\n\(combined)"
+                    let summary = try await lmSession.respond(to: sumPrompt)
+                    await MainActor.run {
+                        messages.append(.init(content: "summary: \(summary)", isUser: false))
+                    }
+                } catch {}
                 
-                let assistantMessage = ChatMessage(content: responseContent, isUser: false, sources: sources)
-                messages.append(assistantMessage)
-                isLoading = false
+                // reranking
+                do {
+                    let rankPrompt = "rank these items by relevance to '\(query)', list titles in order:\n\(results.map{$0.displayTitle}.joined(separator: "\n"))"
+                    let ranking = try await lmSession.respond(to: rankPrompt)
+                    await MainActor.run {
+                        messages.append(.init(content: "reranking:\n\(ranking)", isUser: false))
+                    }
+                } catch {}
+            } else {
+                do {
+                    let sumPrompt = "write a message to the user saying that you couldn't find any info for them"
+                    let summary = try await lmSession.respond(to: sumPrompt)
+                    await MainActor.run {
+                        messages.append(.init(content: "summary: \(summary)", isUser: false))
+                    }
+                } catch {}
             }
+            
+            await MainActor.run { isLoading = false }
         }
     }
 }
