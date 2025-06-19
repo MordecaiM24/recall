@@ -33,6 +33,12 @@ struct MainTabView: View {
                     Image(systemName: "plus.circle")
                     Text("Import")
                 }
+            
+            EmergencyButtonView()
+                .tabItem {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text("Nuke")
+                }
         }
         .accentColor(.blue)
     }

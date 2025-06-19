@@ -18,20 +18,20 @@ struct AddDocumentView: View {
         ScrollView {
             VStack(spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("document title")
+                    Text("Document Title")
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    TextField("enter document title...", text: $title)
+                    TextField("Enter Title...", text: $title)
                         .textFieldStyle(.roundedBorder)
                 }
                 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("content")
+                    Text("Content")
                         .font(.headline)
                         .foregroundColor(.primary)
                     
-                    TextField("enter document content...", text: $content, axis: .vertical)
+                    TextField("Enter Document Content...", text: $content, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(10...20)
                 }
@@ -42,7 +42,7 @@ struct AddDocumentView: View {
                             ProgressView()
                                 .scaleEffect(0.8)
                         }
-                        Text(isLoading ? "adding..." : "add document")
+                        Text(isLoading ? "Adding..." : "Add document")
                             .fontWeight(.semibold)
                     }
                     .foregroundColor(.white)
@@ -57,7 +57,7 @@ struct AddDocumentView: View {
             }
             .padding()
         }
-        .alert("document added!", isPresented: $showingSuccess) {
+        .alert("Document Added!", isPresented: $showingSuccess) {
             Button("ok") {
                 clearForm()
             }
@@ -86,7 +86,6 @@ struct AddDocumentView: View {
             } catch {
                 await MainActor.run {
                     isLoading = false
-                    // could show error alert here
                 }
             }
         }
@@ -96,4 +95,9 @@ struct AddDocumentView: View {
         title = ""
         content = ""
     }
+}
+
+
+#Preview {
+    AddDocumentView()
 }

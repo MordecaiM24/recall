@@ -73,6 +73,16 @@ final class ContentService: ObservableObject {
         }
     }
     
+    func deleteDocument(id: String) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            try sqliteService.deleteDocument(id: id)
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
     // MARK: - Message Operations
     
     func addMessage(_ message: Message) async throws -> String {
@@ -104,6 +114,37 @@ final class ContentService: ObservableObject {
                 return nil
             }
             return Message(from: data)
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
+    func getAllMessages() async throws -> [Message] {
+        do {
+            return try sqliteService.findAllMessages()
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
+    func deleteMessage(id: String) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            try sqliteService.deleteMessage(id: id)
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+
+    func deleteMessages(ids: [String]) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            for id in ids {
+                try sqliteService.deleteMessage(id: id)
+            }
         } catch {
             self.error = ContentServiceError.storageFailed(error)
             throw error
@@ -147,6 +188,25 @@ final class ContentService: ObservableObject {
         }
     }
     
+    func getAllEmails() async throws -> [Email] {
+        do {
+            return try sqliteService.findAllEmails()
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
+    func deleteEmail(id: String) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            try sqliteService.deleteEmail(id: id)
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+
     // MARK: - Note Operations
     
     func addNote(_ note: Note) async throws -> String {
@@ -178,6 +238,25 @@ final class ContentService: ObservableObject {
                 return nil
             }
             return Note(from: data)
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
+    func getAllNotes() async throws -> [Note] {
+        do {
+            return try sqliteService.findAllNotes()
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
+    func deleteNote(id: String) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            try sqliteService.deleteNote(id: id)
         } catch {
             self.error = ContentServiceError.storageFailed(error)
             throw error
@@ -235,6 +314,59 @@ final class ContentService: ObservableObject {
         }
     }
     
+    func getAllContent() async -> [UnifiedContent] {
+        var allContent: [UnifiedContent] = []
+        
+        do {
+            let documents = try await getAllDocuments()
+            allContent.append(contentsOf: documents.map {UnifiedContent(from: $0, distance: 1.0)})
+        } catch {
+            print("failed to load documents")
+        }
+        
+        do {
+            let messages = try await getAllMessages()
+            allContent.append(contentsOf: messages.map {UnifiedContent(from: $0, distance: 1.0)})
+        } catch {
+            print("failed to load messages")
+        }
+        
+        do {
+            let notes = try await getAllNotes()
+            allContent.append(contentsOf: notes.map {UnifiedContent(from: $0, distance: 1.0)})
+        } catch {
+            print("failed to load messages")
+        }
+        
+        do {
+            let emails = try await getAllEmails()
+            allContent.append(contentsOf: emails.map {UnifiedContent(from: $0, distance: 1.0)})
+        } catch {
+            print("failed to load emails")
+        }
+        
+        return allContent
+    }
+    
+    func deleteContent(type: ContentType, id: String) async throws {
+        switch type {
+        case .document:  try await deleteDocument(id: id)
+        case .message:   try await deleteMessage(id: id)
+        case .email:     try await deleteEmail(id: id)
+        case .note:      try await deleteNote(id: id)
+        }
+    }
+
+    func deleteContents(type: ContentType, ids: [String]) async throws {
+        switch type {
+        case .document:  try await deleteDocuments(ids: ids)
+        case .message:   try await deleteMessages(ids: ids)
+        case .email:     try await deleteEmails(ids: ids)
+        case .note:      try await deleteNotes(ids: ids)
+        }
+    }
+    
+    
     // MARK: - Batch Operations
     
     func addMessages(_ messages: [Message]) async throws -> [String] {
@@ -260,6 +392,18 @@ final class ContentService: ObservableObject {
             }
             
             return messageIds
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+
+    func deleteDocuments(ids: [String]) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            for id in ids {
+                try sqliteService.deleteDocument(id: id)
+            }
         } catch {
             self.error = ContentServiceError.storageFailed(error)
             throw error
@@ -295,6 +439,18 @@ final class ContentService: ObservableObject {
         }
     }
     
+    func deleteEmails(ids: [String]) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            for id in ids {
+                try sqliteService.deleteEmail(id: id)
+            }
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
     func addNotes(_ notes: [Note]) async throws -> [String] {
         isLoading = true
         defer { isLoading = false }
@@ -324,6 +480,18 @@ final class ContentService: ObservableObject {
         }
     }
     
+    func deleteNotes(ids: [String]) async throws {
+        isLoading = true; defer { isLoading = false }
+        do {
+            for id in ids {
+                try sqliteService.deleteNote(id: id)
+            }
+        } catch {
+            self.error = ContentServiceError.storageFailed(error)
+            throw error
+        }
+    }
+    
     // MARK: - Search by Content Type
     
     func searchDocuments(query: String, limit: Int = 10) async -> [UnifiedContent] {
@@ -346,5 +514,9 @@ final class ContentService: ObservableObject {
     
     func clearError() {
         error = nil
+    }
+    
+    func nukeDB() {
+        sqliteService.nukeDB()
     }
 }

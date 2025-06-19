@@ -14,6 +14,9 @@ struct LibraryView: View {
     @State private var searchText = ""
     @State private var allContent: [UnifiedContent] = []
     @State private var isLoading = true
+    @State private var selection = Set<UUID>()
+    @FocusState private var isTextFieldFocused: Bool
+    @Environment(\.editMode) private var editMode
     
     enum SortOption: String, CaseIterable {
         case dateDescending = "Date (Newest)"
@@ -67,8 +70,9 @@ struct LibraryView: View {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.secondary)
                         
-                        TextField("search library...", text: $searchText)
+                        TextField("Search library...", text: $searchText)
                             .textFieldStyle(.plain)
+                            .focused($isTextFieldFocused)
                         
                         if !searchText.isEmpty {
                             Button(action: { searchText = "" }) {
@@ -101,7 +105,7 @@ struct LibraryView: View {
                             ForEach(ContentType.allCases, id: \.self) { type in
                                 Button(action: { selectedContentType = type }) {
                                     HStack(spacing: 4) {
-                                        Text(type.icon)
+                                        Image(systemName: type.icon)
                                             .font(.caption)
                                         Text(type.displayName)
                                             .font(.caption)
@@ -168,17 +172,29 @@ struct LibraryView: View {
                 } else if filteredAndSortedContent.isEmpty {
                     NoResultsLibraryView(hasFilters: selectedContentType != nil || !searchText.isEmpty)
                 } else {
-                    LibraryContentList(content: filteredAndSortedContent)
+//                    LibraryContentList(content: filteredAndSortedContent)
+                    List(selection: $selection) {
+                        ForEach(filteredAndSortedContent) { item in
+                            LibraryItemRow(content: item, reload: loadContent)
+                        }
+                    }.listStyle(.plain)
                 }
             }
-            .navigationTitle("library")
+            .navigationTitle("Library")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .topBarLeading) {
+                    EditButton()
+                }
+                
+                ToolbarItem(placement: .topBarTrailing) {
                     Button(action: loadContent) {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
+            }
+            .onTapGesture {
+                isTextFieldFocused = false
             }
         }
         .onAppear {
@@ -186,35 +202,80 @@ struct LibraryView: View {
         }
     }
     
-    private func loadContent() {
+    func loadContent() {
         isLoading = true
         
         Task {
-            // simulate loading all content by searching with a broad query
-            // in a real app, you'd have a "getAllContent" method
-            let results = await contentService.search(query: "", limit: 1000)
-            
-            // if no results from empty query, try getting documents directly
-            var documents: [Document] = []
-            do {
-                documents = try await contentService.getAllDocuments()
-            } catch {
-                print("failed to load documents: \(error)")
-            }
+            let results = await contentService.getAllContent()
             
             await MainActor.run {
-                // combine search results with documents
                 var combinedContent = results
-                
-                // add documents that might not be in search results
-                for doc in documents {
-                    if !results.contains(where: { $0.id == doc.id && $0.type == .document }) {
-                        combinedContent.append(UnifiedContent(from: doc, distance: 0.0))
-                    }
-                }
                 
                 allContent = combinedContent
                 isLoading = false
+            }
+        }
+    }
+}
+
+struct LibraryItemRow: View {
+    let content: UnifiedContent
+    let reload: () -> Void
+    @EnvironmentObject var contentService: ContentService
+    @State private var showingDetail = false
+    @Environment(\.editMode) private var editMode
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(spacing: 8) {
+                Image(systemName: content.typeIcon).font(.title)
+                Text(content.type.displayName)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .frame(width: 60)
+            
+            VStack(alignment: .leading) {
+                Text(content.displayTitle)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .lineLimit(2)
+                
+                Text(content.snippet)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                
+                Text(content.formattedDate)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onTapGesture {
+            guard editMode?.wrappedValue != .active else { return }
+            showingDetail = true
+        }
+        .contentShape(Rectangle())
+        .sheet(isPresented: $showingDetail) {
+            ContentDetailView(content: content)
+        }
+        .swipeActions {
+            Button(role: .destructive) {
+                Task {
+                    try? await contentService.deleteContent(
+                        type: content.type,
+                        id: content.id
+                    )
+                    
+                    reload()
+                }
+            } label: {
+                Label("Delete", systemImage: "trash")
             }
         }
     }
@@ -298,7 +359,7 @@ struct LibraryItemCard: View {
             HStack(spacing: 12) {
                 // type indicator
                 VStack {
-                    Text(content.typeIcon)
+                    Image(systemName: content.typeIcon)
                         .font(.title3)
                     
                     Text(content.type.displayName)
@@ -343,3 +404,4 @@ struct LibraryItemCard: View {
         }
     }
 }
+

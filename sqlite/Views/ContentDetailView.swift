@@ -18,7 +18,7 @@ struct ContentDetailView: View {
                     // header
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Text(content.typeIcon)
+                            Image(systemName: content.typeIcon)
                                 .font(.largeTitle)
                             
                             VStack(alignment: .leading, spacing: 4) {
@@ -38,7 +38,7 @@ struct ContentDetailView: View {
                             Spacer()
                             
                             VStack(alignment: .trailing, spacing: 4) {
-                                Text("relevance")
+                                Text("Relevance")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 
@@ -60,7 +60,7 @@ struct ContentDetailView: View {
                     // metadata
                     if !content.metadata.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("details")
+                            Text("Details")
                                 .font(.headline)
                                 .foregroundColor(.primary)
                             
@@ -85,7 +85,7 @@ struct ContentDetailView: View {
                     
                     // content
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("content")
+                        Text("Content")
                             .font(.headline)
                             .foregroundColor(.primary)
                         
@@ -99,12 +99,12 @@ struct ContentDetailView: View {
                 }
                 .padding()
             }
-            .navigationTitle("content details")
+            .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden()
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("done") {
+                    Button("Done") {
                         dismiss()
                     }
                 }
@@ -136,4 +136,9 @@ struct ContentDetailView: View {
             rootViewController.present(activityVC, animated: true)
         }
     }
+}
+
+
+#Preview {
+    ContentDetailView(content: UnifiedContent(id: "a", type: .document, title: "asdf", content: "asdf", snippet: "asdf", date: .now, distance: 0.0))
 }

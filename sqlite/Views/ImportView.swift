@@ -71,7 +71,7 @@ struct AddContentView: View {
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
             }
-            .navigationTitle("import content")
+            .navigationTitle("Import Your Content")
             .navigationBarTitleDisplayMode(.inline)
         }
     }

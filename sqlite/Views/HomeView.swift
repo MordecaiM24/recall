@@ -27,6 +27,7 @@ struct HomeView: View {
     @State private var messages: [ChatMessage] = []
     @State private var inputText = ""
     @State private var isLoading = false
+    @FocusState private var isTextFieldFocused: Bool
     
     var body: some View {
         NavigationView {
@@ -42,24 +43,24 @@ struct HomeView: View {
                                         .foregroundColor(.secondary)
                                     
                                     VStack(spacing: 8) {
-                                        Text("ask about your content")
+                                        Text("Ask about your content")
                                             .font(.title2)
                                             .fontWeight(.semibold)
                                         
-                                        Text("search through your documents, messages, emails, and notes using natural language")
+                                        Text("Search through your documents, messages, emails, and notes using natural language.")
                                             .font(.body)
                                             .foregroundColor(.secondary)
                                             .multilineTextAlignment(.center)
                                     }
                                     
                                     VStack(alignment: .leading, spacing: 8) {
-                                        Text("try asking:")
+                                        Text("Try asking:")
                                             .font(.caption)
                                             .foregroundColor(.secondary)
                                         
-                                        SampleQuestionView(text: "what did alice say about the project?")
-                                        SampleQuestionView(text: "show me emails about machine learning")
-                                        SampleQuestionView(text: "find notes from last week")
+                                        SampleQuestionView(text: "What did Alice say about the project?")
+                                        SampleQuestionView(text: "Show me my emails about that machine learning conference.")
+                                        SampleQuestionView(text: "Who is the lead developer on this project?")
                                     }
                                 }
                                 .padding(.top, 40)
@@ -74,6 +75,7 @@ struct HomeView: View {
                         .padding(.horizontal)
                         .padding(.bottom, 20)
                     }
+                    .scrollDismissesKeyboard(.interactively)
                     .onChange(of: messages.count) { _ in
                         if let lastMessage = messages.last {
                             withAnimation(.easeOut(duration: 0.3)) {
@@ -88,13 +90,14 @@ struct HomeView: View {
                     Divider()
                     
                     HStack(spacing: 12) {
-                        TextField("ask about your content...", text: $inputText, axis: .vertical)
+                        TextField("Ask anything", text: $inputText)
                             .textFieldStyle(.plain)
-                            .padding(.horizontal, 16)
+                            .padding(.horizontal, 24)
                             .padding(.vertical, 12)
                             .background(Color(.systemGray6))
                             .cornerRadius(20)
                             .lineLimit(1...4)
+                            .focused($isTextFieldFocused)
                         
                         Button(action: sendMessage) {
                             Image(systemName: isLoading ? "stop.circle.fill" : "arrow.up.circle.fill")
@@ -108,8 +111,11 @@ struct HomeView: View {
                 }
                 .background(Color(.systemBackground))
             }
-            .navigationTitle("knowledge base")
+            .navigationTitle("Recall")
             .navigationBarTitleDisplayMode(.inline)
+            .onTapGesture {
+                isTextFieldFocused = false
+            }
         }
     }
     
@@ -121,8 +127,9 @@ struct HomeView: View {
         let userMessage = ChatMessage(content: trimmedInput, isUser: true)
         messages.append(userMessage)
         
-        // clear input
+        // clear input and dismiss keyboard
         inputText = ""
+        isTextFieldFocused = false
         isLoading = true
         
         // simulate ai response with search
@@ -134,10 +141,10 @@ struct HomeView: View {
                 let sources: [UnifiedContent]?
                 
                 if searchResults.isEmpty {
-                    responseContent = "i couldn't find any content related to '\(trimmedInput)'. try adding some documents, messages, emails, or notes first."
+                    responseContent = "I couldn't find any content related to '\(trimmedInput)'. Try adding some documents, messages, emails, or notes first."
                     sources = nil
                 } else {
-                    responseContent = "i found \(searchResults.count) relevant items about '\(trimmedInput)'. here's what i discovered:"
+                    responseContent = "I found \(searchResults.count) relevant items about '\(trimmedInput)'. Here's what I discovered:"
                     sources = searchResults
                 }
                 
@@ -219,7 +226,7 @@ struct SourceCardView: View {
     var body: some View {
         Button(action: { showingDetail = true }) {
             HStack(spacing: 12) {
-                Text(content.typeIcon)
+                Image(systemName: content.typeIcon)
                     .font(.title2)
                 
                 VStack(alignment: .leading, spacing: 4) {
@@ -268,3 +275,7 @@ struct SourceCardView: View {
     }
 }
 
+
+#Preview {
+    HomeView()
+}

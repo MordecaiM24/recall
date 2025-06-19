@@ -24,10 +24,10 @@ enum ContentType: String, CaseIterable {
     
     var icon: String {
         switch self {
-        case .document: return "📄"
-        case .message: return "💬"
-        case .email: return "📧"
-        case .note: return "📝"
+        case .document: return "document"
+        case .message: return "message"
+        case .email: return "envelope"
+        case .note: return "note.text"
         }
     }
     

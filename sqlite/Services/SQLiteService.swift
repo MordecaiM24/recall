@@ -334,6 +334,21 @@ final class SQLiteService {
     
     // MARK: - Message Operations
     
+    func findAllMessages() throws -> [Message] {
+        let sql = "SELECT * FROM Message ORDER BY Date DESC"
+        let stmt = try prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        
+        var messages: [Message] = []
+        
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let messageData = extractMessage(from: stmt)
+            messages.append(Message(from: messageData))
+        }
+        
+        return messages
+    }
+    
     func insertMessage(_ message: MessageData) throws -> String {
         let messageId = generateUUID()
         
@@ -386,7 +401,49 @@ final class SQLiteService {
         return nil
     }
     
+    func deleteMessage(id: String) throws {
+        try execute("BEGIN TRANSACTION;")
+        defer { try? execute("COMMIT;") }
+        do {
+            let stmt = try prepare("DELETE FROM Message WHERE Id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
+
+        do {
+            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
+    }
+
+    
     // MARK: - Email Operations
+    
+    func findAllEmails() throws -> [Email] {
+        let sql = "SELECT * FROM Email ORDER BY Date DESC;"
+        let stmt = try prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        
+        var emails: [Email] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let emailData = extractEmail(from: stmt)
+            emails.append(Email(from: emailData))
+        }
+        return emails
+    }
     
     func insertEmail(_ email: EmailData) throws -> String {
         let emailId = generateUUID()
@@ -442,7 +499,51 @@ final class SQLiteService {
         return nil
     }
     
+    func deleteEmail(id: String) throws {
+        try execute("BEGIN TRANSACTION;")
+        defer { try? execute("COMMIT;") }
+        do {
+            let stmt = try prepare("DELETE FROM Email WHERE Id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
+
+        do {
+            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
+    }
+
+    
     // MARK: - Note Operations
+    
+    func findAllNotes() throws -> [Note] {
+        let noteSql = "SELECT * FROM Note ORDER BY Modified DESC"
+        let stmt = try prepare(noteSql)
+        defer { sqlite3_finalize(stmt) }
+        
+        var notes: [Note] = []
+        
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let noteData = extractNote(from: stmt)
+            notes.append(Note(from: noteData))
+        }
+        
+        return notes
+    }
     
     func insertNote(_ note: NoteData) throws -> String {
         let noteId = generateUUID()
@@ -519,6 +620,34 @@ final class SQLiteService {
             return extractNote(from: stmt)
         }
         return nil
+    }
+    
+    func deleteNote(id: String) throws {
+        try execute("BEGIN TRANSACTION;")
+        defer { try? execute("COMMIT;") }
+        do {
+            let stmt = try prepare("DELETE FROM Note WHERE Id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
+
+        do {
+            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
     }
     
     // MARK: - Chunk Operations
@@ -702,6 +831,43 @@ final class SQLiteService {
             guard let doc = try? findDocument(id: result.id) else { return nil }
             return SearchResult(document: doc, distance: result.distance)
         }
+    }
+    
+    func deleteDocument(id: String) throws {
+        try execute("BEGIN TRANSACTION;")
+        defer { try? execute("COMMIT;") }
+        do {
+            let stmt = try prepare("DELETE FROM Document WHERE Id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
+
+        do {
+            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+        }
+    }
+
+    
+    func nukeDB() {
+        print(try! execute("DELETE FROM Message;"))
+        print(try! execute("DELETE FROM Email;"))
+        print(try! execute("DELETE FROM Note;"))
+        print(try! execute("DELETE FROM Document;"))
+        print(try! execute("DELETE FROM Chunk;"))
     }
 }
 

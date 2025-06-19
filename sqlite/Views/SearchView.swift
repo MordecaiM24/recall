@@ -136,7 +136,7 @@ struct FilterChipView: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Text(type.icon)
+                Image(systemName: type.icon)
                     .font(.caption)
                 Text(type.displayName)
                     .font(.caption)
@@ -162,11 +162,11 @@ struct EmptySearchView: View {
                 .foregroundColor(.secondary)
             
             VStack(spacing: 8) {
-                Text("search your knowledge base")
+                Text("Search your knowledge base")
                     .font(.title2)
                     .fontWeight(.semibold)
                 
-                Text("find documents, messages, emails, and notes using keywords or natural language")
+                Text("Find documents, messages, emails, and notes using keywords or natural language")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -233,7 +233,7 @@ struct SearchResultCard: View {
         Button(action: { showingDetail = true }) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
-                    Text(content.typeIcon)
+                    Image(systemName: content.typeIcon)
                         .font(.title2)
                     
                     VStack(alignment: .leading, spacing: 4) {
