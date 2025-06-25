@@ -81,4 +81,51 @@ class ContentServiceTests: XCTestCase {
         let chunks = try sqliteService.getAllChunksByThreadId("thread-abc")
         XCTAssertGreaterThan(chunks.count, 0)
     }
+    
+    func testConcurrentEmailImportCreatesMultipleThreadsAndChunks() async throws {
+        let threadCount = 10
+        let emailsPerThread = 15
+        var emails: [Email] = []
+        let baseDate = Date()
+        
+        for threadIndex in 0..<threadCount {
+            let threadId = "thread-\(threadIndex)"
+            for emailIndex in 0..<emailsPerThread {
+                let emailId = "email-\(threadIndex)-\(emailIndex)"
+                emails.append(
+                    Email(
+                        id: emailId,
+                        originalId: "orig-\(threadIndex)-\(emailIndex)",
+                        threadId: threadId,
+                        subject: "Subject \(emailId)",
+                        sender: "sender\(threadIndex)@test.com",
+                        recipient: "recipient@test.com",
+                        date: baseDate.addingTimeInterval(Double(emailIndex * 60)),
+                        content: "Email content for \(emailId). This is a longer body to ensure chunking.",
+                        labels: ["inbox"],
+                        snippet: "Snippet \(emailId)",
+                        timestamp: Int64(baseDate.timeIntervalSince1970) + Int64(emailIndex * 60)
+                    )
+                )
+            }
+        }
+        
+        XCTAssertNotNil(contentService)
+        
+        let ids = try await contentService.importEmails(emails)
+        XCTAssertEqual(ids.count, threadCount * emailsPerThread)
+        
+        for threadIndex in 0..<threadCount {
+            let threadId = "thread-\(threadIndex)"
+            let thread = try sqliteService.findThreadByOriginalId(threadId: threadId)
+            XCTAssertNotNil(thread)
+            XCTAssertEqual(thread?.itemIds.count, emailsPerThread)
+            let expectedIds = (0..<emailsPerThread).map { "email-\(threadIndex)-\($0)" }
+            XCTAssertEqual(Set(thread?.itemIds ?? []), Set(expectedIds))
+            
+           
+            let chunks = try sqliteService.getAllChunksByThreadId(threadId)
+            XCTAssertGreaterThan(chunks.count, 0)
+        }
+    }
 }
