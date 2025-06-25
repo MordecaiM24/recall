@@ -8,17 +8,17 @@
 import Foundation
 
 struct SearchResult: Identifiable {
-    let document: Document
+    let threadChunk: ThreadChunk
+    let thread: Thread
+    let items: [Item]
     let distance: Double
     
-    var id: Int32 { document.id }
+    var id: String { threadChunk.id }
 
     var similarity: Double {
-        // inverse relationship between distance and similarity
         return max(0, 1.0 / (1.0 + distance))
     }
     
-    /// formatted similarity percentage
     var similarityPercentage: String {
         return String(format: "%.1f%%", similarity * 100)
     }
