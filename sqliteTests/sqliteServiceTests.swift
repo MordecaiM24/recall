@@ -156,16 +156,19 @@ class SQLiteServiceTests: XCTestCase {
     func testThreadCRUD() async throws {
         let thread = Thread(id: "test-uuid", type: ContentType.document, itemIds: ["test-1", "test-2"], threadId: "thread-uuid", snippet: "snippet", content: "asdf \n----\n qwerty", created: Date(timeIntervalSinceNow: 0))
         
-        let threadId = try sqliteService.insertThread(thread)
-        XCTAssertFalse(threadId.isEmpty)
+        let id = try sqliteService.insertThread(thread)
+        XCTAssertFalse(id.isEmpty)
         
-        let fetched = try sqliteService.findThread(id: threadId)
-        XCTAssertEqual(fetched?.id, threadId)
+        let fetched = try sqliteService.findThread(id: id)
+        XCTAssertEqual(fetched?.id, id)
         XCTAssertEqual(fetched?.id, thread.id)
+        
+        let fetchedByOriginal = try sqliteService.findThreadByOriginalId(threadId: thread.threadId)
+        XCTAssertEqual(fetched?.threadId, thread.threadId)
         
         let allThreads = try sqliteService.getAllThreads()
         XCTAssertGreaterThanOrEqual(allThreads.count, 1)
-        XCTAssertEqual(allThreads[0].id, threadId)
+        XCTAssertEqual(allThreads[0].id, id)
     }
     
     func testThreadChunkCRUDAndGetByThreadId() async throws {
@@ -339,7 +342,7 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertEqual(fetchedB.count, 1, "should have one item in thread B")
         XCTAssertEqual(fetchedB.first?.id, "item-3")
     }
-
+    
     func testSearchIntegration() async throws {
         // 1) Build two email chains: AI conference vs. Baking
         let now = Date()

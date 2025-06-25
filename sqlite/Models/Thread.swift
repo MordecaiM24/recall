@@ -8,7 +8,6 @@
 import Foundation
 
 enum ThreadError: Error {
-    case InvalidSubject
     case InvalidId
 }
 
@@ -35,10 +34,6 @@ struct Thread: Identifiable, Hashable {
     init(from items: [Item]) throws {
         if (!items.allSatisfy { $0.threadId == items[0].threadId })  {
             throw ThreadError.InvalidId
-        }
-        
-        if (!items.allSatisfy { $0.snippet == items[0].snippet })  {
-            throw ThreadError.InvalidSubject
         }
         
         self.id = UUID().uuidString

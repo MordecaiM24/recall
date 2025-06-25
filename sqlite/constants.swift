@@ -28,7 +28,8 @@ let defaultDBPath: String = {
 }()
 
 /// schema version to detect breaking changes
-let schemaVersion = 2
+let schemaVersion = 3
+// 3. everything.
 // 2. bumped for new document tables
 let databaseVersionKey = "dbSchemaVersion"
 

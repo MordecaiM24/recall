@@ -34,6 +34,11 @@ final class SQLiteService {
         if sqlite3_open(path, &db) == SQLITE_OK {
             self.dbPointer = db
             
+            if sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil) != SQLITE_OK {
+                let msg = String(cString: sqlite3_errmsg(db))
+                throw SQLiteError.openDatabase(message: "Failed to set WAL mode: \(msg)")
+            }
+            
             // load sqlite-vec extension
             if sqlite3_vec_init(db, nil, nil) != SQLITE_OK {
                 let msg = String(cString: sqlite3_errmsg(db))
@@ -195,6 +200,15 @@ final class SQLiteService {
         print("thread chunks table ready")
     }
     
+    // would rather not deal with race conditions later
+    // only necessary on writes (wal covers reads)
+    private let dbQueue = DispatchQueue(label: "sqlite.serial.db")
+    
+    func sync<T>(_ block: () throws -> T) rethrows -> T {
+        try dbQueue.sync {
+            try block()
+        }
+    }
     
     // MARK: - Search
     
@@ -214,41 +228,41 @@ final class SQLiteService {
         ORDER BY distance
         LIMIT ?;
         """
-
+        
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
-
+        
         let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-
+        
         for (i, ct) in contentTypes.enumerated() {
             guard sqlite3_bind_text(stmt, Int32(i + 1), ct.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
         }
-
+        
         let blob = embeddingToBlob(queryEmbedding)
         let blobIndex = contentTypes.count + 1
         guard sqlite3_bind_blob(stmt, Int32(blobIndex), blob, Int32(blob.count), nil) == SQLITE_OK else {
             throw SQLiteError.bind(message: errorMessage)
         }
-
+        
         let limitIndex = contentTypes.count + 2
         guard sqlite3_bind_int(stmt, Int32(limitIndex), Int32(limit)) == SQLITE_OK else {
             throw SQLiteError.bind(message: errorMessage)
         }
-
+        
         var results = [SearchResult]()
         while sqlite3_step(stmt) == SQLITE_ROW {
             let chunkId   = String(cString: sqlite3_column_text(stmt, 0))
             let threadId  = String(cString: sqlite3_column_text(stmt, 1))
             let distance  = sqlite3_column_double(stmt, 2)
-
+            
             let chunks = try getAllChunksByThreadId(threadId)
             guard let threadChunk = chunks.first(where: { $0.id == chunkId }) else { continue }
-
+            
             guard let thread = try findThread(id: threadId) else { continue }
             let items = try getItemsByThreadId(threadId)
-
+            
             results.append(
                 SearchResult(
                     threadChunk: threadChunk,
@@ -258,8 +272,274 @@ final class SQLiteService {
                 )
             )
         }
-
+        
         return results
+    }
+    
+    // MARK: - "Optimized" Batch Insertions:
+    // (optimal bc single preparation vs per row statement prep)
+    
+    func insertItems(_ items: [Item]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Item (id, type, thread_id, title, content, snippet, date, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for item in items {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                let metadataData = try JSONSerialization.data(withJSONObject: item.metadata)
+                let metadataString = String(data: metadataData, encoding: .utf8) ?? "{}"
+                let dateString = ISO8601DateFormatter().string(from: item.date)
+                guard
+                    sqlite3_bind_text(stmt, 1, item.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, item.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, item.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, item.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, item.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 6, item.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 7, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, metadataString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 9, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(item.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+
+    
+    func insertDocuments(_ documents: [Document]) throws -> [String] {
+        return try sync {
+            let sql = "INSERT INTO Document (id, title, content, created_at) VALUES (?, ?, ?, ?);"
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for doc in documents {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard
+                    sqlite3_bind_text(stmt, 1, doc.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, doc.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, doc.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: doc.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(doc.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+
+
+    func insertEmails(_ emails: [Email]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Email (id, original_id, thread_id, subject, sender, recipient, date, content, labels, snippet, timestamp, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for email in emails {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                let labelsJSON = try JSONSerialization.data(withJSONObject: email.labels)
+                let labelsString = String(data: labelsJSON, encoding: .utf8) ?? "[]"
+                guard
+                    sqlite3_bind_text(stmt, 1, email.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: email.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 12, ISO8601DateFormatter().string(from: email.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(email.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+
+    func insertNotes(_ notes: [Note]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Note (id, original_id, title, snippet, content, folder, created, modified, creation_timestamp, modification_timestamp, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for note in notes {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard
+                    sqlite3_bind_text(stmt, 1, note.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 2, note.originalId) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, note.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, note.snippet ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, note.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 6, note.folder, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 7, note.created.map { ISO8601DateFormatter().string(from: $0) } ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, ISO8601DateFormatter().string(from: note.modified), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_double(stmt, 9, note.creationTimestamp ?? 0) == SQLITE_OK,
+                    sqlite3_bind_double(stmt, 10, note.modificationTimestamp) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 11, ISO8601DateFormatter().string(from: note.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(note.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    func insertMessages(_ messages: [Message]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Message (id, original_id, text, date, timestamp, is_from_me, is_sent, service, contact, chat_name, chat_id, contact_number, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for message in messages {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard
+                    sqlite3_bind_text(stmt, 1, message.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 2, message.originalId) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, message.text, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: message.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int64(stmt, 5, message.timestamp) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 6, message.isFromMe ? 1 : 0) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 7, message.isSent ? 1 : 0) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, message.service, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 9, message.contact, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 10, message.chatName ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 11, message.chatId ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 12, message.contactNumber ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 13, ISO8601DateFormatter().string(from: message.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(message.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    func insertThreadChunks(_ threadChunks: [ThreadChunk]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Chunk (id, thread_id, parent_ids, type, content, chunk_index, startPosition, endPosition, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, vec_f32(?));
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for chunk in threadChunks {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                let parentIdsJSON = try JSONSerialization.data(withJSONObject: chunk.parentIds)
+                let parentIdsString = String(data: parentIdsJSON, encoding: .utf8) ?? "[]"
+                let vectorBlob = embeddingToBlob(chunk.embedding)
+                guard
+                    sqlite3_bind_text(stmt, 1, chunk.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, chunk.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, parentIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, chunk.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, chunk.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 6, Int32(chunk.chunkIndex)) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 7, Int32(chunk.startPosition)) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 8, Int32(chunk.endPosition)) == SQLITE_OK,
+                    sqlite3_bind_blob(stmt, 9, vectorBlob, Int32(vectorBlob.count), nil) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(chunk.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
     }
 
     
@@ -473,236 +753,254 @@ final class SQLiteService {
         return nil
     }
     
-    // MARK: - Basic Insertion
-    func insertDocument(_ document: Document) throws -> String {
-        let docSQL = "INSERT INTO Document (id, title, content, created_at) VALUES (?, ?, ?, ?);"
-        let stmt = try prepare(docSQL)
+    func findThreadByOriginalId(threadId: String) throws -> Thread? {
+        let sql = "SELECT * FROM Thread WHERE thread_id = ?;"
+        let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
-        
         let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, document.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 2, document.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, document.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: document.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+        guard sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
             throw SQLiteError.bind(message: errorMessage)
         }
         
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            return try extractThread(from: stmt)
         }
-        
-        return document.id
+        return nil
+    }
+    
+    // MARK: - Basic Insertion
+    func insertDocument(_ document: Document) throws -> String {
+        return try sync {
+            let docSQL = "INSERT INTO Document (id, title, content, created_at) VALUES (?, ?, ?, ?);"
+            let stmt = try prepare(docSQL)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, document.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, document.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, document.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: document.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return document.id
+        }
     }
     
     func insertEmail(_ email: Email) throws -> String {
-        let sql = """
-        INSERT INTO Email (id, original_id, thread_id, subject, sender, recipient, date, content, labels, snippet, timestamp, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        let labelsJSON = try JSONSerialization.data(withJSONObject: email.labels)
-        let labelsString = String(data: labelsJSON, encoding: .utf8) ?? "[]"
-        
-        guard sqlite3_bind_text(stmt, 1, email.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: email.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 12, ISO8601DateFormatter().string(from: email.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = """
+            INSERT INTO Email (id, original_id, thread_id, subject, sender, recipient, date, content, labels, snippet, timestamp, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            let labelsJSON = try JSONSerialization.data(withJSONObject: email.labels)
+            let labelsString = String(data: labelsJSON, encoding: .utf8) ?? "[]"
+            
+            guard sqlite3_bind_text(stmt, 1, email.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: email.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 12, ISO8601DateFormatter().string(from: email.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return email.id
         }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        return email.id
     }
     
     func insertMessage(_ message: Message) throws -> String {
-        let sql = """
-        INSERT INTO Message (id, original_id, text, date, timestamp, is_from_me, is_sent, service, contact, chat_name, chat_id, contact_number, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        guard sqlite3_bind_text(stmt, 1, message.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 2, message.originalId) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, message.text, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: message.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int64(stmt, 5, message.timestamp) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 6, message.isFromMe ? 1 : 0) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 7, message.isSent ? 1 : 0) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 8, message.service, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 9, message.contact, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 10, message.chatName ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 11, message.chatId ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 12, message.contactNumber ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 13, ISO8601DateFormatter().string(from: message.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = """
+            INSERT INTO Message (id, original_id, text, date, timestamp, is_from_me, is_sent, service, contact, chat_name, chat_id, contact_number, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            guard sqlite3_bind_text(stmt, 1, message.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 2, message.originalId) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, message.text, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: message.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int64(stmt, 5, message.timestamp) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 6, message.isFromMe ? 1 : 0) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 7, message.isSent ? 1 : 0) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 8, message.service, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 9, message.contact, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 10, message.chatName ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 11, message.chatId ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 12, message.contactNumber ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 13, ISO8601DateFormatter().string(from: message.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return message.id
         }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        return message.id
     }
     
     func insertNote(_ note: Note) throws -> String {
-        let sql = """
-        INSERT INTO Note (id, original_id, title, snippet, content, folder, created, modified, creation_timestamp, modification_timestamp, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        guard sqlite3_bind_text(stmt, 1, note.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 2, note.originalId) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, note.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, note.snippet ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 5, note.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 6, note.folder, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 7, note.created.map { ISO8601DateFormatter().string(from: $0) } ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 8, ISO8601DateFormatter().string(from: note.modified), -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_double(stmt, 9, note.creationTimestamp ?? 0) == SQLITE_OK,
-              sqlite3_bind_double(stmt, 10, note.modificationTimestamp) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 11, ISO8601DateFormatter().string(from: note.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = """
+            INSERT INTO Note (id, original_id, title, snippet, content, folder, created, modified, creation_timestamp, modification_timestamp, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            guard sqlite3_bind_text(stmt, 1, note.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 2, note.originalId) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, note.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, note.snippet ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, note.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 6, note.folder, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 7, note.created.map { ISO8601DateFormatter().string(from: $0) } ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 8, ISO8601DateFormatter().string(from: note.modified), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_double(stmt, 9, note.creationTimestamp ?? 0) == SQLITE_OK,
+                  sqlite3_bind_double(stmt, 10, note.modificationTimestamp) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 11, ISO8601DateFormatter().string(from: note.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return note.id
         }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        return note.id
     }
     
     func insertThread(_ thread: Thread) throws -> String {
-        let sql = """
-        INSERT INTO Thread
-        (id, type, thread_id, item_ids, snippet, content, created)
-        VALUES (?, ?, ?, ?, ?, ?, ?);
-        """
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        let itemIdsJSON = try JSONSerialization.data(withJSONObject: thread.itemIds)
-        let itemIdsString = String(data: itemIdsJSON, encoding: .utf8) ?? "[]"
-        
-        
-        guard sqlite3_bind_text(stmt, 1, thread.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 2, thread.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, thread.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, itemIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 5, thread.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 6, thread.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: thread.created), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = """
+            INSERT INTO Thread
+            (id, type, thread_id, item_ids, snippet, content, created)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            let itemIdsJSON = try JSONSerialization.data(withJSONObject: thread.itemIds)
+            let itemIdsString = String(data: itemIdsJSON, encoding: .utf8) ?? "[]"
+            
+            
+            guard sqlite3_bind_text(stmt, 1, thread.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, thread.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, thread.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, itemIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, thread.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 6, thread.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: thread.created), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return thread.id
         }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        return thread.id
     }
     
     func insertItem(_ item: Item) throws -> String {
-        let sql = """
-            INSERT INTO Item (id, type, thread_id, title, content, snippet, date, metadata, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        let metadataData = try JSONSerialization.data(withJSONObject: item.metadata)
-        let metadataString = String(data: metadataData, encoding: .utf8) ?? "{}"
-        let dateString = ISO8601DateFormatter().string(from: item.date)
-        
-        guard
-            sqlite3_bind_text(stmt, 1, item.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 2, item.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 3, item.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 4, item.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 5, item.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 6, item.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 7, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 8, metadataString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-            sqlite3_bind_text(stmt, 9, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK
-        else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = """
+                INSERT INTO Item (id, type, thread_id, title, content, snippet, date, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            let metadataData = try JSONSerialization.data(withJSONObject: item.metadata)
+            let metadataString = String(data: metadataData, encoding: .utf8) ?? "{}"
+            let dateString = ISO8601DateFormatter().string(from: item.date)
+            
+            guard
+                sqlite3_bind_text(stmt, 1, item.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 2, item.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 3, item.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 4, item.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 5, item.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 6, item.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 7, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 8, metadataString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 9, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK
+            else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return item.id
         }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        return item.id
-    }
-    
-    func insertItems(_ items: [Item]) throws -> [String] {
-        var insertedIds = [String]()
-        try beginTransaction()
-        for item in items {
-            let id = try insertItem(item)
-            insertedIds.append(id)
-        }
-        try commitTransaction()
-        return insertedIds
     }
     
     func insertThreadChunk(_ threadChunk: ThreadChunk) throws -> String {
-        let sql = """
-        INSERT INTO Chunk (id, thread_id, parent_ids, type, content, chunk_index, startPosition, endPosition, embedding) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, vec_f32(?));
-        """
-        
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        let parentIdsJSON = try JSONSerialization.data(withJSONObject: threadChunk.parentIds)
-        let parentIdsString = String(data: parentIdsJSON, encoding: .utf8) ?? "[]"
-        
-        let vectorBlob = embeddingToBlob(threadChunk.embedding)
-        
-        guard sqlite3_bind_text(stmt, 1, threadChunk.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 2, threadChunk.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, parentIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, threadChunk.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 5, threadChunk.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 6, Int32(threadChunk.chunkIndex)) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 7, Int32(threadChunk.startPosition)) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 8, Int32(threadChunk.endPosition)) == SQLITE_OK,
-              sqlite3_bind_blob(stmt, 9, vectorBlob, Int32(vectorBlob.count), nil) == SQLITE_OK
-        else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = """
+            INSERT INTO Chunk (id, thread_id, parent_ids, type, content, chunk_index, startPosition, endPosition, embedding) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, vec_f32(?));
+            """
+            
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            let parentIdsJSON = try JSONSerialization.data(withJSONObject: threadChunk.parentIds)
+            let parentIdsString = String(data: parentIdsJSON, encoding: .utf8) ?? "[]"
+            
+            let vectorBlob = embeddingToBlob(threadChunk.embedding)
+            
+            guard sqlite3_bind_text(stmt, 1, threadChunk.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, threadChunk.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, parentIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, threadChunk.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, threadChunk.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 6, Int32(threadChunk.chunkIndex)) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 7, Int32(threadChunk.startPosition)) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 8, Int32(threadChunk.endPosition)) == SQLITE_OK,
+                  sqlite3_bind_blob(stmt, 9, vectorBlob, Int32(vectorBlob.count), nil) == SQLITE_OK
+            else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return threadChunk.id
         }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        return threadChunk.id
     }
     
     /// convert [Float] to binary blob (4 bytes per float, little endian)
@@ -980,5 +1278,14 @@ final class SQLiteService {
     
     private func commitTransaction() throws {
         try execute("COMMIT;")
+    }
+    
+    func clearAllData() throws {
+        try execute("DELETE FROM Document;")
+        try execute("DELETE FROM Note;")
+        try execute("DELETE FROM Email;")
+        try execute("DELETE FROM Thread;")
+        try execute("DELETE FROM Chunk;")
+        try execute("DELETE FROM Item;")
     }
 }
