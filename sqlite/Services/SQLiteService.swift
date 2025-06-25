@@ -323,7 +323,7 @@ final class SQLiteService {
             return insertedIds
         }
     }
-
+    
     
     func insertDocuments(_ documents: [Document]) throws -> [String] {
         return try sync {
@@ -358,8 +358,8 @@ final class SQLiteService {
             return insertedIds
         }
     }
-
-
+    
+    
     func insertEmails(_ emails: [Email]) throws -> [String] {
         return try sync {
             let sql = """
@@ -406,7 +406,7 @@ final class SQLiteService {
             return insertedIds
         }
     }
-
+    
     func insertNotes(_ notes: [Note]) throws -> [String] {
         return try sync {
             let sql = """
@@ -541,7 +541,7 @@ final class SQLiteService {
             return insertedIds
         }
     }
-
+    
     
     // MARK: - Batch Query
     func getAllDocuments() throws -> [Document] {

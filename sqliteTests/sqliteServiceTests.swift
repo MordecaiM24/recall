@@ -163,7 +163,7 @@ class SQLiteServiceTests: XCTestCase {
         XCTAssertEqual(fetched?.id, id)
         XCTAssertEqual(fetched?.id, thread.id)
         
-        let fetchedByOriginal = try sqliteService.findThreadByOriginalId(threadId: thread.threadId)
+        let _ = try sqliteService.findThreadByOriginalId(threadId: thread.threadId)
         XCTAssertEqual(fetched?.threadId, thread.threadId)
         
         let allThreads = try sqliteService.getAllThreads()
@@ -362,7 +362,7 @@ class SQLiteServiceTests: XCTestCase {
             snippet: "Hey Bob, are you planning to attend the AI conference…",
             timestamp: Int64(now.timeIntervalSince1970)
         )
-        try sqliteService.insertEmail(aiEmail)
+        let _ = try sqliteService.insertEmail(aiEmail)
         
         let aiItem = Item(
             id: UUID().uuidString,
@@ -375,10 +375,10 @@ class SQLiteServiceTests: XCTestCase {
             threadId: aiEmail.threadId,
             metadata: ["sender": aiEmail.sender, "labels": aiEmail.labels]
         )
-        try sqliteService.insertItem(aiItem)
+        let _ = try sqliteService.insertItem(aiItem)
         
         let aiThread = try Thread(from: [aiItem])
-        try sqliteService.insertThread(aiThread)
+        let _ = try sqliteService.insertThread(aiThread)
         
         // embed & index one chunk for the AI thread
         let aiEmbedding = try await embeddingService.embed(text: aiEmail.content)
@@ -392,7 +392,7 @@ class SQLiteServiceTests: XCTestCase {
             startPosition: 0,
             endPosition: aiThread.content.count
         )
-        try sqliteService.insertThreadChunk(aiChunk)
+        let _ = try sqliteService.insertThreadChunk(aiChunk)
         
         
         // ——— Baking chain ———
@@ -410,7 +410,7 @@ class SQLiteServiceTests: XCTestCase {
             snippet: "Hi Dave, I tried a new sourdough bread recipe…",
             timestamp: Int64(now.timeIntervalSince1970)
         )
-        try sqliteService.insertEmail(bakeEmail)
+        let _ = try sqliteService.insertEmail(bakeEmail)
         
         let bakeItem = Item(
             id: UUID().uuidString,
@@ -423,10 +423,10 @@ class SQLiteServiceTests: XCTestCase {
             threadId: bakeEmail.threadId,
             metadata: ["sender": bakeEmail.sender, "labels": bakeEmail.labels]
         )
-        try sqliteService.insertItem(bakeItem)
+        let _ = try sqliteService.insertItem(bakeItem)
         
         let bakeThread = try Thread(from: [bakeItem])
-        try sqliteService.insertThread(bakeThread)
+        let _ = try sqliteService.insertThread(bakeThread)
         
         // embed & index one chunk for the Baking thread
         let bakeEmbedding = try await embeddingService.embed(text: bakeEmail.content)
@@ -440,7 +440,7 @@ class SQLiteServiceTests: XCTestCase {
             startPosition: 0,
             endPosition: bakeThread.content.count
         )
-        try sqliteService.insertThreadChunk(bakeChunk)
+        let _ = try sqliteService.insertThreadChunk(bakeChunk)
         
         
         // 2) Search for "AI conference" — AI thread should rank #1

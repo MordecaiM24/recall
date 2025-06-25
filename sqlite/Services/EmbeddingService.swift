@@ -88,7 +88,7 @@ class BertTokenizer {
         // Create attention mask (1 for real tokens, 0 for padding)
         let realTokenCount = tokenIds.count
         let attentionMask = Array(repeating: 1, count: realTokenCount) +
-                          Array(repeating: 0, count: maxLength - realTokenCount)
+        Array(repeating: 0, count: maxLength - realTokenCount)
         
         // Pad input IDs to maxLength
         let paddedIds = tokenIds + Array(repeating: 0, count: maxLength - realTokenCount)
@@ -415,7 +415,7 @@ extension EmbeddingService {
         }
         
         return (startPos, min(endPos, content.count))
-
+        
     }
     
     private func findFirstContentToken(tokens: [String], fromIndex: Int) -> String? {
@@ -450,7 +450,7 @@ extension EmbeddingService {
         }
         return cleaned
     }
-
+    
 }
 
 
