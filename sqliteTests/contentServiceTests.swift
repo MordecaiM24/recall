@@ -34,7 +34,7 @@ class ContentServiceTests: XCTestCase {
         super.tearDown()
     }
     
-    // dummu data generation
+    // dummy data generation
     func dummyDocument(id: String = UUID().uuidString) -> Document {
         Document(id: id, title: "Doc Title", content: "Doc Content", createdAt: Date())
     }

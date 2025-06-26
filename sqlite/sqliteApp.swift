@@ -8,10 +8,23 @@
 import SwiftUI
 
 @main
-struct sqliteApp: App {
+struct ContentApp: App {
+    @StateObject private var contentService: ContentService
+    
+    init() {
+        do {
+            let temp = try ContentService()
+            _contentService = StateObject(wrappedValue: temp)
+        } catch {
+            fatalError("failed to initialize content service: \(error)")
+        }
+    }
+    
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainTabView()
+                .environmentObject(contentService)
         }
     }
 }
+

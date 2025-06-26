@@ -698,6 +698,19 @@ final class SQLiteService {
         return results
     }
     
+    func getAllChunks() throws -> [ThreadChunk] {
+        let sql = "SELECT * FROM Chunk;"
+        let stmt = try prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        
+        var results = [] as [ThreadChunk]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(try extractThreadChunk(from: stmt))
+        }
+        
+        return results
+    }
+    
     // MARK: - Query by ID
     func getItemsByThreadId(_ threadId: String, type: String? = nil, limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Item] {
         print("preparing SQL with threadId: \(threadId)")

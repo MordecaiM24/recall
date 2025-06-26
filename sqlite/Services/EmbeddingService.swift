@@ -307,7 +307,7 @@ extension EmbeddingService {
         config: ChunkingConfig = ChunkingConfig()
     ) async throws -> [ThreadChunk] {
         let content = thread.content
-        let threadId = thread.threadId
+        let threadId = thread.id
         let parentIds = thread.itemIds
         
         let type = thread.type

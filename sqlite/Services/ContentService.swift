@@ -143,7 +143,6 @@ final class ContentService: ObservableObject {
     func byThreadId(_ threadId: String, type: ContentType? = nil, limit: Int? = nil,
                     offset: Int? = nil,
                     orderBy: ordering? = nil) async throws -> [Item] {
-        print("getting items by thread \(threadId)")
         return try sqlite.getItemsByThreadId(threadId, type: type?.rawValue, limit: limit, offset: offset, orderBy: orderBy?.sql)
     }
     
@@ -154,6 +153,8 @@ final class ContentService: ObservableObject {
     }
     
     func search(_ query: String, limit: Int) async throws -> [SearchResult] {
+        let numChunks = try sqlite.getAllChunks()
+        
         let queryEmbedding = try await embedding.embed(text: query)
         return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding, limit: limit)
     }
@@ -172,11 +173,8 @@ final class ContentService: ObservableObject {
     }
     
     func importMessages(_ messages: [Message]) async throws -> [String] {
-        print("importing \(messages.count) messages")
         let messageIds = try sqlite.insertMessages(messages)
-        print("inserted \(messageIds.count) messages")
         let items = messages.map { Item(from: $0) }
-        print("creating items from messages")
         
         try await createThreads(from: items)
         
@@ -231,5 +229,9 @@ final class ContentService: ObservableObject {
             
             try await group.waitForAll()
         }
+    }
+    
+    func clearAll() {
+        try! sqlite.clearAllData()
     }
 }
