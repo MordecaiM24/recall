@@ -11,13 +11,16 @@ struct MessageBubble: View {
     let message: Message
     let isLastInGroup: Bool
     
+    private let outgoingBubbleColor = Color(red: 0.03921568627, green: 0.5176470588, blue: 1)
+    private let incomingBubbleColor = Color(red: 0.1490196078, green: 0.1490196078, blue: 0.1607843137)
+    
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
             if message.isFromMe {
                 Spacer(minLength: 60)
-                messageBubble
+                outgoingBubble
             } else {
-                messageBubble
+                incomingBubbleView
                 Spacer(minLength: 60)
             }
         }
@@ -25,104 +28,44 @@ struct MessageBubble: View {
         .padding(.vertical, 1)
     }
     
-    private var messageBubble: some View {
-        Text(message.text)
-            .font(.system(size: 16))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .foregroundColor(message.isFromMe ? .white : .primary)
-            .background(bubbleShape)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-    
-    private var bubbleShape: some View {
-        BubbleShape(
-            isFromMe: message.isFromMe,
-            hastail: isLastInGroup
-        )
-        .fill(message.isFromMe ?
-              LinearGradient(colors: [Color(red: 0.05, green: 0.55, blue: 1.0),
-                                    Color(red: 0.0, green: 0.48, blue: 0.99)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing) :
-              LinearGradient(colors: [Color(.systemGray5), Color(.systemGray6)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-    }
-}
-
-struct BubbleShape: Shape {
-    let isFromMe: Bool
-    let hastail: Bool
-    
-    func path(in rect: CGRect) -> Path {
-        let radius: CGFloat = 18
-        let tailSize: CGFloat = 6
-        
-        var path = Path()
-        
-        if isFromMe {
-            // right-aligned bubble with tail on bottom right
-            path.move(to: CGPoint(x: radius, y: 0))
-            path.addLine(to: CGPoint(x: rect.width - radius, y: 0))
-            path.addQuadCurve(to: CGPoint(x: rect.width, y: radius),
-                            control: CGPoint(x: rect.width, y: 0))
-            
-            if hastail {
-                path.addLine(to: CGPoint(x: rect.width, y: rect.height - radius - tailSize))
-                path.addQuadCurve(to: CGPoint(x: rect.width - radius, y: rect.height - tailSize),
-                                control: CGPoint(x: rect.width, y: rect.height - tailSize))
-                path.addLine(to: CGPoint(x: rect.width - radius + 2, y: rect.height - tailSize))
-                path.addQuadCurve(to: CGPoint(x: rect.width + 2, y: rect.height + 2),
-                                control: CGPoint(x: rect.width - 2, y: rect.height))
-                path.addQuadCurve(to: CGPoint(x: rect.width - 8, y: rect.height - 2),
-                                control: CGPoint(x: rect.width - 4, y: rect.height - 1))
-                path.addLine(to: CGPoint(x: radius, y: rect.height - 2))
-            } else {
-                path.addLine(to: CGPoint(x: rect.width, y: rect.height - radius))
-                path.addQuadCurve(to: CGPoint(x: rect.width - radius, y: rect.height),
-                                control: CGPoint(x: rect.width, y: rect.height))
-                path.addLine(to: CGPoint(x: radius, y: rect.height))
+    private var outgoingBubble: some View {
+        ZStack(alignment: .bottomTrailing) {
+            if isLastInGroup {
+                Image("outgoingTail")
+                    .padding(EdgeInsets(top: 0, leading: 0, bottom: -2, trailing: -5))
             }
-            
-            path.addQuadCurve(to: CGPoint(x: 0, y: rect.height - radius),
-                            control: CGPoint(x: 0, y: rect.height))
-            path.addLine(to: CGPoint(x: 0, y: radius))
-            path.addQuadCurve(to: CGPoint(x: radius, y: 0),
-                            control: CGPoint(x: 0, y: 0))
-        } else {
-            // left-aligned bubble with tail on bottom left
-            path.move(to: CGPoint(x: rect.width - radius, y: 0))
-            path.addQuadCurve(to: CGPoint(x: rect.width, y: radius),
-                            control: CGPoint(x: rect.width, y: 0))
-            path.addLine(to: CGPoint(x: rect.width, y: rect.height - radius))
-            path.addQuadCurve(to: CGPoint(x: rect.width - radius, y: rect.height),
-                            control: CGPoint(x: rect.width, y: rect.height))
-            
-            if hastail {
-                path.addLine(to: CGPoint(x: radius + tailSize, y: rect.height))
-                path.addQuadCurve(to: CGPoint(x: radius, y: rect.height - tailSize),
-                                control: CGPoint(x: radius, y: rect.height))
-                path.addLine(to: CGPoint(x: radius - 2, y: rect.height - tailSize))
-                path.addQuadCurve(to: CGPoint(x: -2, y: rect.height + 2),
-                                control: CGPoint(x: 2, y: rect.height))
-                path.addQuadCurve(to: CGPoint(x: 8, y: rect.height - 2),
-                                control: CGPoint(x: 4, y: rect.height - 1))
-                path.addLine(to: CGPoint(x: 8, y: rect.height - 2))
-                path.addLine(to: CGPoint(x: 8, y: radius))
-            } else {
-                path.addLine(to: CGPoint(x: radius, y: rect.height))
-                path.addQuadCurve(to: CGPoint(x: 0, y: rect.height - radius),
-                                control: CGPoint(x: 0, y: rect.height))
-                path.addLine(to: CGPoint(x: 0, y: radius))
-            }
-            
-            path.addQuadCurve(to: CGPoint(x: radius, y: 0),
-                            control: CGPoint(x: 0, y: 0))
-            path.addLine(to: CGPoint(x: rect.width - radius, y: 0))
+            Text(message.text)
+                .font(.body)
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(outgoingBubbleColor)
+                )
         }
-        
-        return path
+        .fixedSize(horizontal: false, vertical: true)
     }
+    
+    private var incomingBubbleView: some View {
+        ZStack(alignment: .bottomLeading) {
+            if isLastInGroup {
+                Image("incomingTail")
+                    .padding(EdgeInsets(top: 0, leading: -5, bottom: -2, trailing: 0))
+            }
+            Text(message.text)
+                .font(.body)
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(incomingBubbleColor)
+                )
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
 }
 
 struct DateSeparator: View {
@@ -159,7 +102,6 @@ struct MessageThreadView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // drag handle bar
             RoundedRectangle(cornerRadius: 2.5)
                 .fill(Color(.systemGray3))
                 .frame(width: 40, height: 5)
@@ -229,13 +171,13 @@ struct MessageThreadView: View {
         if index == dayMessages.count - 1 { return true }
         let nextMessage = dayMessages[index + 1]
         return message.isFromMe != nextMessage.isFromMe ||
-               message.date.timeIntervalSince(nextMessage.date) > 300 // 5min gap
+        message.date.timeIntervalSince(nextMessage.date) > 300 // 5min gap
     }
     
     private func isFirstMessageInGroup(message: Message, index: Int, dayMessages: [Message]) -> Bool {
         if index == 0 { return true }
         let previousMessage = dayMessages[index - 1]
         return message.isFromMe != previousMessage.isFromMe ||
-               message.date.timeIntervalSince(previousMessage.date) > 300
+        message.date.timeIntervalSince(previousMessage.date) > 300
     }
 }
