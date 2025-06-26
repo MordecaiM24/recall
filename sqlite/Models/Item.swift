@@ -50,7 +50,10 @@ struct Item: Identifiable {
     let content: String
     let embeddableText: String
     let snippet: String
-    let threadId: String
+    // this is glue - change this if possible. threadId is going to be reassigned before we insert in the content service
+    // but original thread id's based on the imported data type should be separate from the db generated uuid we create.
+    // tbh this could also work as an indicator of whether a thread has been fully imported but that's for >v0.5
+    var threadId: String
     let date: Date
     
 

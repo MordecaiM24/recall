@@ -7,6 +7,25 @@
 
 import Foundation
 
+enum ordering {
+    case createdAtAsc
+    case createdAtDesc
+    case dateAsc
+    case dateDesc
+    case titleAsc
+    case titleDesc
+    
+    var sql: String {
+        switch self {
+        case .createdAtAsc: return "created_at ASC"
+        case .createdAtDesc: return "created_at DESC"
+        case .dateAsc: return "date ASC"
+        case .dateDesc: return "date DESC"
+        case .titleAsc: return "title ASC"
+        case .titleDesc: return "title DESC"
+        }
+    }
+}
 
 final class ContentService: ObservableObject {
     @Published private(set) var isLoading = false
@@ -83,46 +102,69 @@ final class ContentService: ObservableObject {
         return ids
     }
     
-    // single entry point for reads
-    func all(_ type: ContentType) async throws -> [Item] {
+    // single entry point for paginated, etc reads
+    func all(
+        _ type: ContentType?,
+        limit: Int? = nil,
+        offset: Int? = nil,
+        orderBy: ordering? = nil
+    ) async throws -> [Item] {
         switch type {
-        case .document: return try sqlite.getAllDocuments().map(Item.init(from:))
-        case .message: return try sqlite.getAllMessages().map(Item.init(from:))
-        case .email: return try sqlite.getAllEmails().map(Item.init(from:))
-        case .note: return try sqlite.getAllNotes().map(Item.init(from:))
+        case .document:
+            return try sqlite.getAllDocuments(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        case .message:
+            return try sqlite.getAllMessages(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        case .email:
+            return try sqlite.getAllEmails(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        case .note:
+            return try sqlite.getAllNotes(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        default:
+            return try sqlite.getAllItems(limit: limit, offset: offset, orderBy: orderBy?.sql)
         }
     }
     
-    func one(_ type: ContentType, id: String) async throws -> Item? {
+    func one(_ type: ContentType?, id: String) async throws -> Item? {
         switch type {
         case .document: return try sqlite.findDocument(id: id).map(Item.init(from:))
         case .message: return try sqlite.findMessage(id: id).map(Item.init(from:))
         case .email: return try sqlite.findEmail(id: id).map(Item.init(from:))
         case .note: return try sqlite.findNote(id: id).map(Item.init(from:))
+        default: return try sqlite.findItem(id: id)
         }
     }
     
+    func byThreadId(_ threadId: String, type: ContentType? = nil, limit: Int? = nil,
+                    offset: Int? = nil,
+                    orderBy: ordering? = nil) async throws -> [Item] {
+        print("getting items by thread \(threadId)")
+        return try sqlite.getItemsByThreadId(threadId, type: type?.rawValue, limit: limit, offset: offset, orderBy: orderBy?.sql)
+    }
+    
+    
+    func search(_ query: String) async throws -> [SearchResult] {
+        let queryEmbedding = try await embedding.embed(text: query)
+        return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding)
+    }
     
     // not a fan of the lack of DRY here but what can ya do
     
     // TODO: improve atomicity here
     // TODO: put embedding on background thread
     func importEmails(_ emails: [Email]) async throws -> [String] {
-        print("inserting emails")
         let emailIds = try sqlite.insertEmails(emails)
-        print("inserted \(emailIds.count) emails")
         let items = emails.map { Item(from: $0) }
-        print("generated \(items.count) items from emails")
         
         try await createThreads(from: items)
-        print("inserted threads")
         
         return emailIds
     }
     
     func importMessages(_ messages: [Message]) async throws -> [String] {
+        print("importing \(messages.count) messages")
         let messageIds = try sqlite.insertMessages(messages)
+        print("inserted \(messageIds.count) messages")
         let items = messages.map { Item(from: $0) }
+        print("creating items from messages")
         
         try await createThreads(from: items)
         
@@ -148,20 +190,30 @@ final class ContentService: ObservableObject {
     }
     
     func createThreads(from items: [Item]) async throws {
-        print("starting thread creation")
+        // this is completely unimportant - it was autocomplete generated, just thought it was funny
+        // let queue = DispatchQueue(label: "com.github.jakeheiser.mailbox.import-threads")
         let grouped = Dictionary(grouping: items, by: { $0.threadId })
         let itemGroups = Array(grouped.values)
-        print("created \(itemGroups.count) thread groups")
         
         let threads = try itemGroups.map { try Thread(from: $0) }
-        print("created \(threads.count) threads")
         
         try await withThrowingTaskGroup(of: Void.self) { group in
             for thread in threads {
+                // again! this is glue - change this if possible. threadId is going to be reassigned before we insert into db
+                // but original thread id's based on the imported data type should be separate from the db generated uuid we're creating.
+                
+                var dbItems = items.filter { $0.threadId == thread.threadId }
+                dbItems = dbItems.map { item in
+                    var newItem = item
+                    newItem.threadId = thread.id
+                    return newItem
+                }
+                
                 group.addTask {
                     let chunks = try await self.embedding.createThreadChunks(from: thread)
-                    try self.sqlite.insertThread(thread)
-                    try self.sqlite.insertThreadChunks(chunks)
+                    _ = try self.sqlite.insertThread(thread)
+                    _ = try self.sqlite.insertItems(dbItems)
+                    _ = try self.sqlite.insertThreadChunks(chunks)
                 }
             }
             

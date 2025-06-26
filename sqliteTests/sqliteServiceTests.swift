@@ -466,4 +466,132 @@ class SQLiteServiceTests: XCTestCase {
         )
     }
 
+    
+    func testGetAllDocumentsWithLimit() throws {
+            // Insert 5 documents with increasing creation dates
+            for i in 1...5 {
+                let doc = Document(id: "doc-\(i)", title: "Doc \(i)", content: "Content \(i)", createdAt: Date(timeIntervalSince1970: Double(i)))
+                _ = try sqliteService.insertDocument(doc)
+            }
+            // Limit without offset
+            let limited = try sqliteService.getAllDocuments(limit: 2)
+            XCTAssertEqual(limited.count, 2, "Should return exactly 2 documents")
+        }
+        
+        func testGetAllDocumentsWithLimitAndOffset() throws {
+            // Insert 4 documents
+            for i in 1...4 {
+                let doc = Document(id: "doc-\(i)", title: "Doc \(i)", content: "Content \(i)", createdAt: Date(timeIntervalSince1970: Double(i)))
+                _ = try sqliteService.insertDocument(doc)
+            }
+            // Offset by 1, limit 2 => should get docs 2 and 3
+            let paged = try sqliteService.getAllDocuments(limit: 2, offset: 1, orderBy: "created_at ASC")
+            XCTAssertEqual(paged.count, 2)
+            XCTAssertEqual(paged[0].id, "doc-2")
+            XCTAssertEqual(paged[1].id, "doc-3")
+        }
+        
+        func testGetAllDocumentsWithOrderByDesc() throws {
+            // Insert 3 documents
+            for i in 1...3 {
+                let doc = Document(id: "doc-\(i)", title: "Doc \(i)", content: "Content \(i)", createdAt: Date(timeIntervalSince1970: Double(i)))
+                _ = try sqliteService.insertDocument(doc)
+            }
+            let ordered = try sqliteService.getAllDocuments(orderBy: "created_at DESC")
+            XCTAssertEqual(ordered.first?.id, "doc-3")
+        }
+        
+        func testGetAllEmailsWithLimitAndOffsetAndOrder() throws {
+            // Insert 3 emails with distinct dates
+            for i in 1...3 {
+                let email = Email(
+                    id: "e-\(i)", originalId: "orig-\(i)", threadId: "t-1",
+                    subject: "Subject \(i)", sender: "s@x.com", recipient: "r@x.com",
+                    date: Date(timeIntervalSince1970: Double(i)),
+                    content: "Body", labels: [], snippet: "snip", timestamp: Int64(i)
+                )
+                _ = try sqliteService.insertEmail(email)
+            }
+            // Test pagination
+            let slice = try sqliteService.getAllEmails(limit: 2, offset: 1, orderBy: "date ASC")
+            XCTAssertEqual(slice.count, 2)
+            XCTAssertEqual(slice[0].id, "e-2")
+        }
+        
+        func testGetAllNotesWithLimit() throws {
+            for i in 1...4 {
+                let note = Note(
+                    id: "n-\(i)", originalId: Int32(i),
+                    title: "Note \(i)", snippet: "snip",
+                    content: "c", folder: "f",
+                    created: Date(timeIntervalSince1970: Double(i)),
+                    modified: Date(),
+                    creationTimestamp: Double(i),
+                    modificationTimestamp: Double(i)
+                )
+                _ = try sqliteService.insertNote(note)
+            }
+            let notes = try sqliteService.getAllNotes(limit: 3, orderBy: "created DESC")
+            XCTAssertEqual(notes.count, 3)
+            XCTAssertEqual(notes.first?.id, "n-4")
+        }
+        
+        func testGetAllMessagesWithOffset() throws {
+            for i in 1...3 {
+                let msg = Message(
+                    id: "m-\(i)", originalId: Int32(i),
+                    text: "T", date: Date(timeIntervalSince1970: Double(i)), timestamp: Int64(i),
+                    isFromMe: true, isSent: true,
+                    service: "svc", contact: "c", chatName: "cn", chatId: "cid", contactNumber: "num"
+                )
+                _ = try sqliteService.insertMessage(msg)
+            }
+            let msgs = try sqliteService.getAllMessages(limit: 2, offset: 1, orderBy: "date ASC")
+            XCTAssertEqual(msgs.count, 2)
+            XCTAssertEqual(msgs[0].id, "m-2")
+        }
+        
+        func testGetAllThreadsWithOrderAndLimit() throws {
+            for i in 1...5 {
+                let thread = Thread(
+                    id: "t-\(i)", type: .document, itemIds: [], threadId: "tid-\(i)", snippet: "s", content: "c", created: Date(timeIntervalSince1970: Double(i))
+                )
+                _ = try sqliteService.insertThread(thread)
+            }
+            let threads = try sqliteService.getAllThreads(limit: 2, orderBy: "created DESC")
+            XCTAssertEqual(threads.count, 2)
+            XCTAssertEqual(threads[0].id, "t-5")
+        }
+        
+        func testGetAllItemsWithPagination() throws {
+            let threadId = "thread"
+            for i in 1...4 {
+                let item = Item(
+                    id: "i-\(i)", type: .message,
+                    title: "", content: "", embeddableText: "", snippet: "",
+                    date: Date(timeIntervalSince1970: Double(i)), threadId: threadId
+                )
+                _ = try sqliteService.insertItem(item)
+            }
+            let items = try sqliteService.getAllItems(limit: 3, offset: 1, orderBy: "date ASC")
+            XCTAssertEqual(items.count, 3)
+            XCTAssertEqual(items[0].id, "i-2")
+        }
+        
+        func testGetItemsByThreadIdWithLimitAndOffset() throws {
+            let tid = "t-1"
+            for i in 1...5 {
+                let item = Item(
+                    id: "x-\(i)", type: .email,
+                    title: "", content: "", embeddableText: "", snippet: "",
+                    date: Date(timeIntervalSince1970: Double(i)), threadId: tid
+                )
+                _ = try sqliteService.insertItem(item)
+            }
+            let subset = try sqliteService.getItemsByThreadId(tid, limit: 2, offset: 2, orderBy: "date DESC")
+            XCTAssertEqual(subset.count, 2)
+            // date DESC means first elements are i=5,i=4,... so offset 2 gives i=3,i=2
+            XCTAssertEqual(subset[0].id, "x-3")
+            XCTAssertEqual(subset[1].id, "x-2")
+        }
 }

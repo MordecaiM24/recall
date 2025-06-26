@@ -15,6 +15,8 @@ enum SQLiteError: Error {
     case initExtension(message: String)
 }
 
+// not very DRY. could probably implement generics. maybe slightly better for performance this way (prep and all)? whatever.
+
 final class SQLiteService {
     private let dbPointer: OpaquePointer?
     private let embeddingDimensions: Int
@@ -215,8 +217,9 @@ final class SQLiteService {
     func searchThreadChunks(
         queryEmbedding: [Float],
         limit: Int = 20,
-        contentTypes: [ContentType] = ContentType.allCases
+        types: [ContentType]? = ContentType.allCases
     ) throws -> [SearchResult] {
+        let contentTypes = types ?? ContentType.allCases
         // Build the “IN (?,?,…)” part dynamically
         let placeholders = contentTypes.map { _ in "?" }.joined(separator: ",")
         let sql = """
@@ -544,8 +547,18 @@ final class SQLiteService {
     
     
     // MARK: - Batch Query
-    func getAllDocuments() throws -> [Document] {
-        let sql = "SELECT * FROM Document;"
+    func getAllDocuments(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Document] {
+        var sql = "SELECT * FROM Document"
+        if let orderBy = orderBy {
+            sql += " ORDER BY \(orderBy)"
+        }
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+            if let offset = offset {
+                sql += " OFFSET \(offset)"
+            }
+        }
+        sql += ";"
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         
@@ -556,8 +569,18 @@ final class SQLiteService {
         return results
     }
     
-    func getAllEmails() throws -> [Email] {
-        let sql = "SELECT * FROM Email;"
+    func getAllEmails(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Email] {
+        var sql = "SELECT * FROM Email"
+        if let orderBy = orderBy {
+            sql += " ORDER BY \(orderBy)"
+        }
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+            if let offset = offset {
+                sql += " OFFSET \(offset)"
+            }
+        }
+        sql += ";"
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         
@@ -568,8 +591,18 @@ final class SQLiteService {
         return results
     }
     
-    func getAllMessages() throws -> [Message] {
-        let sql = "SELECT * FROM Message;"
+    func getAllMessages(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Message] {
+        var sql = "SELECT * FROM Message"
+        if let orderBy = orderBy {
+            sql += " ORDER BY \(orderBy)"
+        }
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+            if let offset = offset {
+                sql += " OFFSET \(offset)"
+            }
+        }
+        sql += ";"
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         
@@ -580,8 +613,18 @@ final class SQLiteService {
         return results
     }
     
-    func getAllNotes() throws -> [Note] {
-        let sql = "SELECT * FROM Note;"
+    func getAllNotes(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Note] {
+        var sql = "SELECT * FROM Note"
+        if let orderBy = orderBy {
+            sql += " ORDER BY \(orderBy)"
+        }
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+            if let offset = offset {
+                sql += " OFFSET \(offset)"
+            }
+        }
+        sql += ";"
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         
@@ -592,14 +635,46 @@ final class SQLiteService {
         return results
     }
     
-    func getAllThreads() throws -> [Thread] {
-        let sql = "SELECT * FROM Thread;"
+    func getAllThreads(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Thread] {
+        var sql = "SELECT * FROM Thread"
+        if let orderBy = orderBy {
+            sql += " ORDER BY \(orderBy)"
+        }
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+            if let offset = offset {
+                sql += " OFFSET \(offset)"
+            }
+        }
+        sql += ";"
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         
         var results = [Thread]()
         while sqlite3_step(stmt) == SQLITE_ROW {
             results.append(try extractThread(from: stmt))
+        }
+        return results
+    }
+    
+    func getAllItems(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Item] {
+        var sql = "SELECT * FROM Item "
+        if let orderBy = orderBy {
+            sql += " ORDER BY \(orderBy)"
+        }
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+            if let offset = offset {
+                sql += " OFFSET \(offset)"
+            }
+        }
+        sql += ";"
+        let stmt = try prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        
+        var results = [Item]()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            results.append(try extractItem(from: stmt))
         }
         return results
     }
@@ -624,8 +699,22 @@ final class SQLiteService {
     }
     
     // MARK: - Query by ID
-    func getItemsByThreadId(_ threadId: String) throws -> [Item] {
-        let sql = "SELECT * FROM Item WHERE thread_id = ? ORDER BY date;"
+    func getItemsByThreadId(_ threadId: String, type: String? = nil, limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Item] {
+        print("preparing SQL with threadId: \(threadId)")
+        var sql = "SELECT * FROM Item WHERE thread_id = ?"
+        if let type = type {
+            sql += " AND type = '\(type)'"
+        }
+        if let orderBy = orderBy {
+            sql += " ORDER BY \(orderBy)"
+        }
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+            if let offset = offset {
+                sql += " OFFSET \(offset)"
+            }
+        }
+        sql += ";"
         let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         
@@ -638,6 +727,8 @@ final class SQLiteService {
         while sqlite3_step(stmt) == SQLITE_ROW {
             results.append(try extractItem(from: stmt))
         }
+        
+        print("got \(results.count) items with threadId: \(threadId)")
         return results
     }
     
@@ -1289,3 +1380,5 @@ final class SQLiteService {
         try execute("DELETE FROM Item;")
     }
 }
+
+
