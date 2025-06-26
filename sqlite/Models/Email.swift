@@ -71,3 +71,29 @@ extension Email {
         return labels.contains("CATEGORY_PROMOTIONS")
     }
 }
+
+extension Email {
+    init?(item: Item) {
+        guard item.type == .email else { return nil }
+        guard let originalId = item.metadata["originalId"] as? String,
+              let sender = item.metadata["sender"] as? String,
+              let recipient = item.metadata["recipient"] as? String,
+              let labels = item.metadata["labels"] as? [String] else {
+            return nil
+        }
+        self.init(
+            id: item.id,
+            originalId: originalId,
+            threadId: item.threadId,
+            subject: item.title,
+            sender: sender,
+            recipient: recipient,
+            date: item.date,
+            content: item.content,
+            labels: labels,
+            snippet: item.snippet,
+            timestamp: Int64(item.date.timeIntervalSince1970)
+        )
+    }
+}
+

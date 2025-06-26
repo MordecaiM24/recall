@@ -114,6 +114,8 @@ extension Item {
             date: message.date,
             threadId: message.contact,
             metadata: [
+                // this should be it's own field but then i'd have to adjust sqlite and i don't feel like it
+                "originalId": message.originalId,
                 "isFromMe": message.isFromMe,
                 "service": message.service,
                 "contact": message.contact,
@@ -133,6 +135,7 @@ extension Item {
             date: email.date,
             threadId: email.threadId,
             metadata: [
+                "originalId": email.originalId,
                 "sender": email.sender,
                 "recipient": email.recipient,
                 "labels": email.labels
@@ -151,6 +154,7 @@ extension Item {
             date: note.modified,
             threadId: note.id,
             metadata: [
+                "originalId": note.originalId,
                 "folder": note.folder,
                 "created": note.created?.timeIntervalSince1970 ?? 0
             ]

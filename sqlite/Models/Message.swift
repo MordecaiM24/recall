@@ -67,3 +67,30 @@ extension Message {
         }
     }
 }
+
+extension Message {
+    init?(item: Item) {
+        guard item.type == .message else { return nil }
+        guard let originalId = item.metadata["originalId"] as? String,
+              let isFromMe = item.metadata["isFromMe"] as? Bool,
+              let service = item.metadata["service"] as? String,
+              let contact = item.metadata["contact"] as? String else {
+            return nil
+        }
+        
+        self.init(
+            id: item.id,
+            originalId: Int32(originalId) ?? 0,
+            text: item.content,
+            date: item.date,
+            timestamp: Int64(item.date.timeIntervalSince1970),
+            isFromMe: isFromMe,
+            isSent: true,
+            service: service,
+            contact: contact,
+            chatName: nil,
+            chatId: item.metadata["chatId"] as? String,
+            contactNumber: nil
+        )
+    }
+}

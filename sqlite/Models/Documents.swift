@@ -42,3 +42,15 @@ extension Document {
         return String(content.prefix(maxLength)) + "..."
     }
 }
+
+extension Document {
+    init?(item: Item) {
+        guard item.type == .document else { return nil }
+        self.init(
+            id: item.id,
+            title: item.title,
+            content: item.content,
+            createdAt: item.date
+        )
+    }
+}
