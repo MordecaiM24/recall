@@ -10,84 +10,40 @@ import SwiftUI
 struct ContentDetailView: View {
     let item: Item
     @Environment(\.dismiss) private var dismiss
-    
+    @State private var threadItems: [Item] = []
+    private let contentService: ContentService
+
+    init(item: Item) {
+        self.item = item
+        do {
+            self.contentService = try ContentService()
+        } catch {
+            // Handle error appropriately in a real app
+            fatalError("Failed to initialize ContentService: \(error)")
+        }
+    }
+
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    // header
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Image(systemName: item.type.icon)
-                                .font(.largeTitle)
-                            
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.type.displayName)
-                                    .font(.caption)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(Color.blue.opacity(0.1))
-                                    .foregroundColor(.blue)
-                                    .cornerRadius(4)
-                                
-                                Text(item.date, style: .date)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Spacer()
-                        }
-                        
-                        Text(item.title)
-                            .font(.title)
-                            .fontWeight(.bold)
-                            .multilineTextAlignment(.leading)
+            VStack {
+                switch item.type {
+                case .email:
+                    if !threadItems.isEmpty {
+                        EmailThreadView(emails: threadItems.compactMap { Email(from: $0) })
+                    } else {
+                        ProgressView()
                     }
-                    
-                    Divider()
-                    
-                    // metadata
-                    if !item.metadata.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Details")
-                                .font(.headline)
-                                .foregroundColor(.primary)
-                            
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2), spacing: 8) {
-                                ForEach(Array(item.metadata.keys.sorted()), id: \.self) { key in
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(key.capitalized)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        
-                                        Text("\(String(describing: item.metadata[key]!))")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }
-                        }
-                        
-                        Divider()
+                case .message:
+                    if !threadItems.isEmpty {
+                        MessageThreadView(initialMessages: threadItems.compactMap { Message(from: $0) })
+                    } else {
+                        ProgressView()
                     }
-                    
-                    // content
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Content")
-                            .font(.headline)
-                            .foregroundColor(.primary)
-                        
-                        Text(item.content)
-                            .font(.body)
-                            .lineSpacing(4)
-                            .multilineTextAlignment(.leading)
-                    }
-                    
-                    Spacer(minLength: 50)
+                default:
+                    defaultDetailView
                 }
-                .padding()
             }
+            .onAppear(perform: fetchThreadItems)
             .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)
             .navigationBarBackButtonHidden()
@@ -103,6 +59,102 @@ struct ContentDetailView: View {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
+            }
+        }
+    }
+
+    private var defaultDetailView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // header
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: item.type.icon)
+                            .font(.largeTitle)
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.type.displayName)
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                                .background(Color.blue.opacity(0.1))
+                                .foregroundColor(.blue)
+                                .cornerRadius(4)
+                            
+                            Text(item.date, style: .date)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Spacer()
+                    }
+                    
+                    Text(item.title)
+                        .font(.title)
+                        .fontWeight(.bold)
+                        .multilineTextAlignment(.leading)
+                }
+                
+                Divider()
+                
+                // metadata
+                if !item.metadata.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Details")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2), spacing: 8) {
+                            ForEach(Array(item.metadata.keys.sorted()), id: \.self) { key in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(key.capitalized)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    
+                                    Text("\(String(describing: item.metadata[key]!))")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    
+                    Divider()
+                }
+                
+                // content
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Content")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    Text(item.content)
+                        .font(.body)
+                        .lineSpacing(4)
+                        .multilineTextAlignment(.leading)
+                }
+                
+                Spacer(minLength: 50)
+            }
+            .padding()
+        }
+    }
+
+    private func fetchThreadItems() {
+        guard item.type == .email || item.type == .message else {
+            // For other types, we can just load the item itself into the threadItems
+            // so the view doesn't show a progress view forever
+            threadItems = [item]
+            return
+        }
+        
+        Task {
+            do {
+                threadItems = try await contentService.byThreadId(item.threadId, type: item.type)
+            } catch {
+                // Handle error
+                print("Error fetching thread items: \(error)")
             }
         }
     }
