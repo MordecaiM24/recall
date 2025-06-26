@@ -219,64 +219,66 @@ final class SQLiteService {
         limit: Int = 20,
         types: [ContentType]? = ContentType.allCases
     ) throws -> [SearchResult] {
-        let contentTypes = types ?? ContentType.allCases
-        // Build the “IN (?,?,…)” part dynamically
-        let placeholders = contentTypes.map { _ in "?" }.joined(separator: ",")
-        let sql = """
-        SELECT id, thread_id, distance
-        FROM Chunk
-        WHERE type IN (\(placeholders))
-          AND chunk_index = 0
-          AND embedding MATCH vec_f32(?)
-        ORDER BY distance
-        LIMIT ?;
-        """
-        
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        for (i, ct) in contentTypes.enumerated() {
-            guard sqlite3_bind_text(stmt, Int32(i + 1), ct.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+        return try sync {
+            let contentTypes = types ?? ContentType.allCases
+            // Build the “IN (?,?,…)” part dynamically
+            let placeholders = contentTypes.map { _ in "?" }.joined(separator: ",")
+            let sql = """
+            SELECT id, thread_id, distance
+            FROM Chunk
+            WHERE type IN (\(placeholders))
+              AND chunk_index = 0
+              AND embedding MATCH vec_f32(?)
+            ORDER BY distance
+            LIMIT ?;
+            """
+            
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            for (i, ct) in contentTypes.enumerated() {
+                guard sqlite3_bind_text(stmt, Int32(i + 1), ct.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+            }
+            
+            let blob = embeddingToBlob(queryEmbedding)
+            let blobIndex = contentTypes.count + 1
+            guard sqlite3_bind_blob(stmt, Int32(blobIndex), blob, Int32(blob.count), nil) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
-        }
-        
-        let blob = embeddingToBlob(queryEmbedding)
-        let blobIndex = contentTypes.count + 1
-        guard sqlite3_bind_blob(stmt, Int32(blobIndex), blob, Int32(blob.count), nil) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        let limitIndex = contentTypes.count + 2
-        guard sqlite3_bind_int(stmt, Int32(limitIndex), Int32(limit)) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        var results = [SearchResult]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let chunkId   = String(cString: sqlite3_column_text(stmt, 0))
-            let threadId  = String(cString: sqlite3_column_text(stmt, 1))
-            let distance  = sqlite3_column_double(stmt, 2)
             
-            let chunks = try getAllChunksByThreadId(threadId)
-            guard let threadChunk = chunks.first(where: { $0.id == chunkId }) else { continue }
+            let limitIndex = contentTypes.count + 2
+            guard sqlite3_bind_int(stmt, Int32(limitIndex), Int32(limit)) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
             
-            guard let thread = try findThread(id: threadId) else { continue }
-            let items = try getItemsByThreadId(threadId)
-            
-            results.append(
-                SearchResult(
-                    threadChunk: threadChunk,
-                    thread: thread,
-                    items: items,
-                    distance: distance
+            var results = [SearchResult]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let chunkId   = String(cString: sqlite3_column_text(stmt, 0))
+                let threadId  = String(cString: sqlite3_column_text(stmt, 1))
+                let distance  = sqlite3_column_double(stmt, 2)
+                
+                let chunks = try getAllChunksByThreadId(threadId)
+                guard let threadChunk = chunks.first(where: { $0.id == chunkId }) else { continue }
+                
+                guard let thread = try findThread(id: threadId) else { continue }
+                let items = try getItemsByThreadId(threadId)
+                
+                results.append(
+                    SearchResult(
+                        threadChunk: threadChunk,
+                        thread: thread,
+                        items: items,
+                        distance: distance
+                    )
                 )
-            )
+            }
+            
+            return results
         }
-        
-        return results
     }
     
     // MARK: - "Optimized" Batch Insertions:
@@ -548,328 +550,362 @@ final class SQLiteService {
     
     // MARK: - Batch Query
     func getAllDocuments(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Document] {
-        var sql = "SELECT * FROM Document"
-        if let orderBy = orderBy {
-            sql += " ORDER BY \(orderBy)"
-        }
-        if let limit = limit {
-            sql += " LIMIT \(limit)"
-            if let offset = offset {
-                sql += " OFFSET \(offset)"
+        return try sync {
+            var sql = "SELECT * FROM Document"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
             }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Document]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(extractDocument(from: stmt))
+            }
+            return results
         }
-        sql += ";"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var results = [Document]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(extractDocument(from: stmt))
-        }
-        return results
     }
     
     func getAllEmails(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Email] {
-        var sql = "SELECT * FROM Email"
-        if let orderBy = orderBy {
-            sql += " ORDER BY \(orderBy)"
-        }
-        if let limit = limit {
-            sql += " LIMIT \(limit)"
-            if let offset = offset {
-                sql += " OFFSET \(offset)"
+        return try sync {
+            var sql = "SELECT * FROM Email"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
             }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Email]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractEmail(from: stmt))
+            }
+            return results
         }
-        sql += ";"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var results = [Email]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(try extractEmail(from: stmt))
-        }
-        return results
     }
     
     func getAllMessages(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Message] {
-        var sql = "SELECT * FROM Message"
-        if let orderBy = orderBy {
-            sql += " ORDER BY \(orderBy)"
-        }
-        if let limit = limit {
-            sql += " LIMIT \(limit)"
-            if let offset = offset {
-                sql += " OFFSET \(offset)"
+        return try sync {
+            var sql = "SELECT * FROM Message"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
             }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Message]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(extractMessage(from: stmt))
+            }
+            return results
         }
-        sql += ";"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var results = [Message]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(extractMessage(from: stmt))
-        }
-        return results
     }
     
     func getAllNotes(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Note] {
-        var sql = "SELECT * FROM Note"
-        if let orderBy = orderBy {
-            sql += " ORDER BY \(orderBy)"
-        }
-        if let limit = limit {
-            sql += " LIMIT \(limit)"
-            if let offset = offset {
-                sql += " OFFSET \(offset)"
+        return try sync {
+            var sql = "SELECT * FROM Note"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
             }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Note]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(extractNote(from: stmt))
+            }
+            return results
         }
-        sql += ";"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var results = [Note]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(extractNote(from: stmt))
-        }
-        return results
     }
     
     func getAllThreads(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Thread] {
-        var sql = "SELECT * FROM Thread"
-        if let orderBy = orderBy {
-            sql += " ORDER BY \(orderBy)"
-        }
-        if let limit = limit {
-            sql += " LIMIT \(limit)"
-            if let offset = offset {
-                sql += " OFFSET \(offset)"
+        return try sync {
+            var sql = "SELECT * FROM Thread"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
             }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Thread]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractThread(from: stmt))
+            }
+            return results
         }
-        sql += ";"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var results = [Thread]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(try extractThread(from: stmt))
-        }
-        return results
     }
     
     func getAllItems(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Item] {
-        var sql = "SELECT * FROM Item "
-        if let orderBy = orderBy {
-            sql += " ORDER BY \(orderBy)"
-        }
-        if let limit = limit {
-            sql += " LIMIT \(limit)"
-            if let offset = offset {
-                sql += " OFFSET \(offset)"
+        return try sync {
+            var sql = "SELECT * FROM Item "
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
             }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Item]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractItem(from: stmt))
+            }
+            return results
         }
-        sql += ";"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var results = [Item]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(try extractItem(from: stmt))
-        }
-        return results
     }
     
     func getAllChunksByThreadId(_ threadId: String) throws -> [ThreadChunk] {
-        let sql = "SELECT * FROM Chunk WHERE thread_id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        if sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) != SQLITE_OK {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Chunk WHERE thread_id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            if sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) != SQLITE_OK {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            var results = [] as [ThreadChunk]
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractThreadChunk(from: stmt))
+            }
+            
+            return results
         }
-        
-        var results = [] as [ThreadChunk]
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(try extractThreadChunk(from: stmt))
-        }
-        
-        return results
     }
     
     func getAllChunks() throws -> [ThreadChunk] {
-        let sql = "SELECT * FROM Chunk;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var results = [] as [ThreadChunk]
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(try extractThreadChunk(from: stmt))
+        return try sync {
+            let sql = "SELECT * FROM Chunk;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [] as [ThreadChunk]
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractThreadChunk(from: stmt))
+            }
+            
+            return results
         }
-        
-        return results
     }
     
     // MARK: - Query by ID
     func getItemsByThreadId(_ threadId: String, type: String? = nil, limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Item] {
-        print("preparing SQL with threadId: \(threadId)")
-        var sql = "SELECT * FROM Item WHERE thread_id = ?"
-        if let type = type {
-            sql += " AND type = '\(type)'"
-        }
-        if let orderBy = orderBy {
-            sql += " ORDER BY \(orderBy)"
-        }
-        if let limit = limit {
-            sql += " LIMIT \(limit)"
-            if let offset = offset {
-                sql += " OFFSET \(offset)"
+        return try sync {
+            print("preparing SQL with threadId: \(threadId)")
+            var sql = "SELECT * FROM Item WHERE thread_id = ?"
+            if let type = type {
+                sql += " AND type = '\(type)'"
             }
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            var results = [Item]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractItem(from: stmt))
+            }
+            
+            print("got \(results.count) items with threadId: \(threadId)")
+            return results
         }
-        sql += ";"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        var results = [Item]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(try extractItem(from: stmt))
-        }
-        
-        print("got \(results.count) items with threadId: \(threadId)")
-        return results
     }
     
     
     func findItem(id: String) throws -> Item? {
-        let sql = "SELECT * FROM Item WHERE id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Item WHERE id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractItem(from: stmt)
+            }
+            return nil
         }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return try extractItem(from: stmt)
-        }
-        return nil
     }
     
     func findItems(ids: [String]) throws -> [Item] {
-        guard !ids.isEmpty else { return [] }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        let sql = "SELECT * FROM Item WHERE id IN (\(placeholders));"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        for (index, id) in ids.enumerated() {
-            guard sqlite3_bind_text(stmt, Int32(index + 1), id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            guard !ids.isEmpty else { return [] }
+            let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+            let sql = "SELECT * FROM Item WHERE id IN (\(placeholders));"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for (index, id) in ids.enumerated() {
+                guard sqlite3_bind_text(stmt, Int32(index + 1), id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
             }
+            
+            var results = [Item]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractItem(from: stmt))
+            }
+            return results
         }
-        
-        var results = [Item]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            results.append(try extractItem(from: stmt))
-        }
-        return results
     }
     
     func findNote(id: String) throws -> Note? {
-        let sql = "SELECT * FROM Note WHERE Id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Note WHERE Id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return extractNote(from: stmt)
+            }
+            
+            return nil
         }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return extractNote(from: stmt)
-        }
-        
-        return nil
     }
     
     func findDocument(id: String) throws -> Document? {
-        let sql = "SELECT * FROM Document WHERE id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Document WHERE id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return extractDocument(from: stmt)
+            }
+            return nil
         }
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return extractDocument(from: stmt)
-        }
-        return nil
     }
     
     func findEmail(id: String) throws -> Email? {
-        let sql = "SELECT * FROM Email WHERE id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Email WHERE id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractEmail(from: stmt)
+            }
+            return nil
         }
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return try extractEmail(from: stmt)
-        }
-        return nil
     }
     
     func findMessage(id: String) throws -> Message? {
-        let sql = "SELECT * FROM Message WHERE id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Message WHERE id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return extractMessage(from: stmt)
+            }
+            return nil
         }
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return extractMessage(from: stmt)
-        }
-        return nil
     }
     
     func findThread(id: String) throws -> Thread? {
-        let sql = "SELECT * FROM Thread WHERE id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Thread WHERE id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractThread(from: stmt)
+            }
+            return nil
         }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return try extractThread(from: stmt)
-        }
-        return nil
     }
     
     func findThreadByOriginalId(threadId: String) throws -> Thread? {
-        let sql = "SELECT * FROM Thread WHERE thread_id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        return try sync {
+            let sql = "SELECT * FROM Thread WHERE thread_id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractThread(from: stmt)
+            }
+            return nil
         }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return try extractThread(from: stmt)
-        }
-        return nil
     }
     
     // MARK: - Basic Insertion
@@ -1386,6 +1422,7 @@ final class SQLiteService {
     
     func clearAllData() throws {
         try execute("DELETE FROM Document;")
+        try execute("DELETE FROM Message;")
         try execute("DELETE FROM Note;")
         try execute("DELETE FROM Email;")
         try execute("DELETE FROM Thread;")

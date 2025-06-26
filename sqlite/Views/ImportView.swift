@@ -79,6 +79,7 @@ struct AddContentView: View {
                     
                     Button("Delete All") {
                         contentService.clearAll()
+                        print("deleted")
                     }
                         .tag(4)
                 }

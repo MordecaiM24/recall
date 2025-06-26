@@ -71,7 +71,7 @@ extension Message {
 extension Message {
     init?(from item: Item) {
         guard item.type == .message else { return nil }
-        guard let originalId = item.metadata["originalId"] as? String,
+        guard let originalId = item.metadata["originalId"] as? Int32,
               let isFromMe = item.metadata["isFromMe"] as? Bool,
               let service = item.metadata["service"] as? String,
               let contact = item.metadata["contact"] as? String else {
@@ -80,7 +80,7 @@ extension Message {
         
         self.init(
             id: item.id,
-            originalId: Int32(originalId) ?? 0,
+            originalId: originalId,
             text: item.content,
             date: item.date,
             timestamp: Int64(item.date.timeIntervalSince1970),

@@ -130,6 +130,16 @@ final class ContentService: ObservableObject {
         }
     }
     
+    func batch(
+        ids: [String]
+    ) throws -> [Item] {
+        return try sqlite.findItems(ids: ids)
+    }
+    
+    func getAllThreads() async throws -> [Thread] {
+        return try sqlite.getAllThreads()
+    }
+    
     func one(_ type: ContentType?, id: String) async throws -> Item? {
         switch type {
         case .document: return try sqlite.findDocument(id: id).map(Item.init(from:))
@@ -216,6 +226,9 @@ final class ContentService: ObservableObject {
                     newItem.threadId = thread.id
                     return newItem
                 }
+                
+                print(thread.type.rawValue)
+                print(thread.snippet)
                 
                 group.addTask {
                     let chunks = try await self.embedding.createThreadChunks(from: thread)

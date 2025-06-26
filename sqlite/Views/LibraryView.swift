@@ -9,11 +9,9 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject var contentService: ContentService
-    @State private var allContent: [Item] = []
-    @State private var isLoadingMore = false
-    @State private var hasMoreContent = true
+    @State private var allItems: [Item] = []
+    @State private var allThreads: [Thread] = []
     @State private var contentCounts: [ContentType: Int] = [:]
-    @State private var currentPage = 0
     @State private var selectedContentType: ContentType? = nil
     @State private var sortOption: SortOption = .dateDescending
     @State private var searchText = ""
@@ -29,8 +27,8 @@ struct LibraryView: View {
         case typeAscending = "Type"
     }
     
-    var filteredAndSortedContent: [Item] {
-        var content = allContent
+    var filteredAndSortedContent: [Thread] {
+        var content = allThreads
         
         // filter by content type
         if let selectedType = selectedContentType {
@@ -41,7 +39,7 @@ struct LibraryView: View {
         if !searchText.isEmpty {
             let searchLower = searchText.lowercased()
             content = content.filter {
-                $0.title.lowercased().contains(searchLower) ||
+                $0.snippet.lowercased().contains(searchLower) ||
                 $0.content.lowercased().contains(searchLower)
             }
         }
@@ -49,13 +47,13 @@ struct LibraryView: View {
         // sort
         switch sortOption {
         case .dateDescending:
-            content.sort { $0.date > $1.date }
+            content.sort { $0.created > $1.created }
         case .dateAscending:
-            content.sort { $0.date < $1.date }
+            content.sort { $0.created < $1.created }
         case .titleAscending:
-            content.sort { $0.title.lowercased() < $1.title.lowercased() }
+            content.sort { $0.snippet.lowercased() < $1.snippet.lowercased() }
         case .titleDescending:
-            content.sort { $0.title.lowercased() > $1.title.lowercased() }
+            content.sort { $0.snippet.lowercased() > $1.snippet.lowercased() }
         case .typeAscending:
             content.sort { $0.type.rawValue < $1.type.rawValue }
         }
@@ -170,7 +168,7 @@ struct LibraryView: View {
                 Divider()
                 
                 // content list with pagination
-                if contentService.isLoading && allContent.isEmpty {
+                if contentService.isLoading && allThreads.isEmpty {
                     VStack(spacing: 16) {
                         Spacer()
                         ProgressView()
@@ -178,16 +176,13 @@ struct LibraryView: View {
                             .foregroundColor(.secondary)
                         Spacer()
                     }
-                } else if allContent.isEmpty {
+                } else if allThreads.isEmpty {
                     EmptyLibraryView()
                 } else if filteredAndSortedContent.isEmpty {
                     NoResultsLibraryView(hasFilters: selectedContentType != nil || !searchText.isEmpty)
                 } else {
                     PaginatedLibraryContentList(
-                        content: filteredAndSortedContent,
-                        isLoadingMore: isLoadingMore,
-                        hasMore: hasMoreContent,
-                        onLoadMore: { loadMoreIfNeeded() }
+                        content: filteredAndSortedContent
                     )
                 }
             }
@@ -225,36 +220,12 @@ struct LibraryView: View {
     func initialLoad() async {
         guard !contentService.isLoading else { return }
         
-        currentPage = 0
-        allContent = []
-        hasMoreContent = true
+        allThreads = []
         
         do {
-            let content = try await contentService.all(selectedContentType, limit: pageSize, offset: currentPage * pageSize)
-            allContent = content
-            hasMoreContent = content.count == pageSize
-            currentPage += 1
+            allThreads = try await contentService.getAllThreads()
         } catch {
             print("Error loading content: \(error)")
-        }
-    }
-    
-    func loadMoreIfNeeded() {
-        guard !isLoadingMore && hasMoreContent else { return }
-        
-        Task {
-            isLoadingMore = true
-            
-            do {
-                let content = try await contentService.all(selectedContentType, limit: pageSize, offset: currentPage * pageSize)
-                allContent.append(contentsOf: content)
-                hasMoreContent = content.count == pageSize
-                currentPage += 1
-            } catch {
-                print("Error loading more content: \(error)")
-            }
-            
-            isLoadingMore = false
         }
     }
     
@@ -266,42 +237,38 @@ struct LibraryView: View {
 }
 
 struct PaginatedLibraryContentList: View {
-    let content: [Item]
-    let isLoadingMore: Bool
-    let hasMore: Bool
-    let onLoadMore: () -> Void
+    let content: [Thread]
     
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                ForEach(Array(content.enumerated()), id: \.element.id) { index, item in
-                    LibraryItemCard(item: item)
-                        .onAppear {
-                            // trigger load more when we're near the end
-                            if index >= content.count - 10 && hasMore && !isLoadingMore {
-                                onLoadMore()
-                            }
-                        }
-                }
-                
-                // loading indicator at bottom
-                if isLoadingMore {
-                    HStack {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("loading more...")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding()
-                } else if !hasMore && content.count > 0 {
-                    Text("no more content")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding()
+                ForEach(Array(content.enumerated()), id: \.element.id) { index, thread in
+                    LibraryItemCard(thread: thread)
                 }
             }
             .padding()
+        }
+    }
+}
+
+struct ItemDetailLoaderView: View {
+    let itemId: String
+    let itemType: ContentType
+    @EnvironmentObject var contentService: ContentService
+    @State private var item: Item?
+    
+    var body: some View {
+        VStack {
+            if let item = item {
+                ContentDetailView(item: item)
+            } else {
+                ProgressView()
+                    .onAppear {
+                        Task {
+                            item = try? await contentService.one(itemType, id: itemId)
+                        }
+                    }
+            }
         }
     }
 }
@@ -384,7 +351,7 @@ struct EmptyLibraryView: View {
                     .font(.title2)
                     .fontWeight(.semibold)
                 
-                Text("import some messages, emails, notes, or documents to get started")
+                Text("import some messages, emails, notes, or documents to getget started")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -425,13 +392,13 @@ struct NoResultsLibraryView: View {
 }
 
 struct LibraryContentList: View {
-    let content: [Item]
+    let content: [Thread]
     
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                ForEach(content) { item in
-                    LibraryItemCard(item: item)
+                ForEach(content) { thread in
+                    LibraryItemCard(thread: thread)
                 }
             }
             .padding()
@@ -440,7 +407,7 @@ struct LibraryContentList: View {
 }
 
 struct LibraryItemCard: View {
-    let item: Item
+    let thread: Thread
     @State private var showingDetail = false
     
     var body: some View {
@@ -448,10 +415,10 @@ struct LibraryItemCard: View {
             HStack(spacing: 12) {
                 // type indicator
                 VStack {
-                    Image(systemName: item.type.icon)
+                    Image(systemName: thread.type.icon)
                         .font(.title3)
                     
-                    Text(item.type.displayName)
+                    Text(thread.type.displayName)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -459,19 +426,19 @@ struct LibraryItemCard: View {
                 
                 // content info
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title)
+                    Text(thread.snippet)
                         .font(.subheadline)
                         .fontWeight(.medium)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
                     
-                    Text(item.snippet)
+                    Text(thread.content.prefix(100))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
                     
-                    Text(item.date, style: .date)
+                    Text(thread.created, style: .date)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -489,7 +456,7 @@ struct LibraryItemCard: View {
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showingDetail) {
-            ContentDetailView(item: item)
+            ThreadDetailLoaderView(thread: thread)
         }
     }
 }

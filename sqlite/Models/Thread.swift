@@ -36,11 +36,17 @@ struct Thread: Identifiable, Hashable {
             throw ThreadError.InvalidId
         }
         
+        switch items[0].type {
+        case .email: snippet = Email(from: items[0])?.subject ?? items[0].snippet
+        case .message: snippet = Message(from: items[0])?.contact ?? items[0].snippet
+        default: snippet = items[0].snippet
+            
+        }
+        
         self.id = UUID().uuidString
         self.type = items[0].type
         self.itemIds = items.map(\.self.id)
         self.threadId = items[0].threadId
-        self.snippet = items[0].snippet
         self.created = items[0].date
         self.content = items.map { $0.content }.joined(separator: "\n\n----\n\n")
     }

@@ -151,64 +151,70 @@ struct DateSeparator: View {
 
 struct MessageThreadView: View {
     @State private var messages: [Message]
-    @State private var isLoadingMore = false
+    @Environment(\.dismiss) private var dismiss
     
     init(initialMessages: [Message]) {
         self._messages = State(initialValue: initialMessages.sorted { $0.date < $1.date })
     }
     
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if isLoadingMore {
-                        ProgressView()
-                            .padding()
-                    }
-                    
-                    ForEach(groupedMessages, id: \.0) { date, dayMessages in
-                        DateSeparator(date: date)
-                        
-                        ForEach(Array(dayMessages.enumerated()), id: \.element.id) { index, message in
-                            let isLastInGroup = isLastMessageInGroup(message: message, index: index, dayMessages: dayMessages)
+        VStack(spacing: 0) {
+            // drag handle bar
+            RoundedRectangle(cornerRadius: 2.5)
+                .fill(Color(.systemGray3))
+                .frame(width: 40, height: 5)
+                .padding(.top, 8)
+                .padding(.bottom, 16)
+                .onTapGesture {
+                    dismiss()
+                }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(groupedMessages.reversed(), id: \.0) { date, dayMessages in
+                            DateSeparator(date: date)
                             
-                            VStack(alignment: message.isFromMe ? .trailing : .leading, spacing: 2) {
-                                if !message.isFromMe && isFirstMessageInGroup(message: message, index: index, dayMessages: dayMessages) {
-                                    HStack {
-                                        Text(message.displayName)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .padding(.leading, 20)
-                                        Spacer()
-                                    }
-                                }
+                            ForEach(Array(dayMessages.enumerated()), id: \.element.id) { index, message in
+                                let isLastInGroup = isLastMessageInGroup(message: message, index: index, dayMessages: dayMessages)
                                 
-                                MessageBubble(message: message, isLastInGroup: isLastInGroup)
-                                
-                                if isLastInGroup {
-                                    HStack {
-                                        if message.isFromMe {
-                                            Spacer()
-                                        }
-                                        Text(message.date, style: .time)
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                            .opacity(0.7)
-                                            .padding(.horizontal, 20)
-                                        if !message.isFromMe {
+                                VStack(alignment: message.isFromMe ? .trailing : .leading, spacing: 2) {
+                                    if !message.isFromMe && isFirstMessageInGroup(message: message, index: index, dayMessages: dayMessages) {
+                                        HStack {
+                                            Text(message.displayName)
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                                .padding(.leading, 20)
                                             Spacer()
                                         }
                                     }
-                                    .padding(.bottom, 8)
+                                    
+                                    MessageBubble(message: message, isLastInGroup: isLastInGroup)
+                                    
+                                    if isLastInGroup {
+                                        HStack {
+                                            if message.isFromMe {
+                                                Spacer()
+                                            }
+                                            Text(message.date, style: .time)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .opacity(0.7)
+                                                .padding(.horizontal, 20)
+                                            if !message.isFromMe {
+                                                Spacer()
+                                            }
+                                        }
+                                        .padding(.bottom, 8)
+                                    }
                                 }
+                                .id(message.id)
                             }
-                            .id(message.id)
                         }
                     }
                 }
             }
+            .background(Color(.systemBackground))
         }
-        .background(Color(.systemBackground))
     }
     
     private var groupedMessages: [(Date, [Message])] {
