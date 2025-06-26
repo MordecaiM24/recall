@@ -34,6 +34,13 @@ final class ContentService: ObservableObject {
     private let sqlite: SQLiteService
     private let embedding: EmbeddingService
     
+    init() throws {
+        self.embedding = try EmbeddingService()
+        self.sqlite = try SQLiteService(embeddingDimensions: embedding.embeddingDimensions)
+        
+        try sqlite.setupDatabase()
+    }
+    
     init(sqlite: SQLiteService, embedding: EmbeddingService) {
         self.sqlite = sqlite
         self.embedding = embedding
@@ -144,6 +151,11 @@ final class ContentService: ObservableObject {
     func search(_ query: String) async throws -> [SearchResult] {
         let queryEmbedding = try await embedding.embed(text: query)
         return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding)
+    }
+    
+    func search(_ query: String, limit: Int) async throws -> [SearchResult] {
+        let queryEmbedding = try await embedding.embed(text: query)
+        return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding, limit: limit)
     }
     
     // not a fan of the lack of DRY here but what can ya do
