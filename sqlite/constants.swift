@@ -28,7 +28,8 @@ let defaultDBPath: String = {
 }()
 
 /// schema version to detect breaking changes
-let schemaVersion = 3
+let schemaVersion = 4
+// 4. removed unique constraint on chat id
 // 3. everything.
 // 2. bumped for new document tables
 let databaseVersionKey = "dbSchemaVersion"

@@ -140,7 +140,7 @@ struct ImportMessagesView: View {
                 defer { url.stopAccessingSecurityScopedResource() }
                 
                 let data = try Data(contentsOf: url)
-                let messageData = try JSONDecoder().decode([MessageImportData].self, from: data)
+                let messageData = try JSONDecoder().decode([MessageImportData].self, from: data).sorted(by: { $0.date < $1.date }).suffix(500)
                 
                 let messages = messageData.map { msgData in
                     Message(
@@ -171,6 +171,7 @@ struct ImportMessagesView: View {
                 await MainActor.run {
                     isImporting = false
                     importError = "failed to import messages: \(error.localizedDescription)"
+                    print(error)
                 }
             }
         }

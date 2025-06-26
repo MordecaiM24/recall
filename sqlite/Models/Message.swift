@@ -69,7 +69,7 @@ extension Message {
 }
 
 extension Message {
-    init?(item: Item) {
+    init?(from item: Item) {
         guard item.type == .message else { return nil }
         guard let originalId = item.metadata["originalId"] as? String,
               let isFromMe = item.metadata["isFromMe"] as? Bool,

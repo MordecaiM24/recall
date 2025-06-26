@@ -152,9 +152,7 @@ final class ContentService: ObservableObject {
         return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding)
     }
     
-    func search(_ query: String, limit: Int) async throws -> [SearchResult] {
-        let numChunks = try sqlite.getAllChunks()
-        
+    func search(_ query: String, limit: Int) async throws -> [SearchResult] {        
         let queryEmbedding = try await embedding.embed(text: query)
         return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding, limit: limit)
     }

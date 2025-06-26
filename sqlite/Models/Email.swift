@@ -73,7 +73,7 @@ extension Email {
 }
 
 extension Email {
-    init?(item: Item) {
+    init?(from item: Item) {
         guard item.type == .email else { return nil }
         guard let originalId = item.metadata["originalId"] as? String,
               let sender = item.metadata["sender"] as? String,

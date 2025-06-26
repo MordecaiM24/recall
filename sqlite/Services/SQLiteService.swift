@@ -115,7 +115,7 @@ final class SQLiteService {
             chat_id TEXT,
             contact_number TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(original_id, chat_id)
+            UNIQUE(original_id)
         );
         """
         try execute(messagesSQL)
