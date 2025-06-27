@@ -6,19 +6,30 @@
 //
 
 import SwiftUI
+import FoundationModels
 
 struct ChatMessage: Identifiable {
+    enum Status {
+        case sending
+        case searching
+        case generating
+        case complete
+        case error
+    }
+    
     let id = UUID()
-    let content: String
+    var content: String
     let isUser: Bool
     let timestamp: Date
-    let sources: [SearchResult]?
+    var sources: [SearchResult]?
+    var status: Status
     
-    init(content: String, isUser: Bool, sources: [SearchResult]? = nil) {
+    init(content: String, isUser: Bool, sources: [SearchResult]? = nil, status: Status = .complete) {
         self.content = content
         self.isUser = isUser
         self.timestamp = Date()
         self.sources = sources
+        self.status = status
     }
 }
 
@@ -29,87 +40,104 @@ struct HomeView: View {
     @State private var isLoading = false
     @FocusState private var isTextFieldFocused: Bool
     
+    private let model = SystemLanguageModel.default
+    
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // chat messages
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            if messages.isEmpty {
-                                VStack(spacing: 20) {
-                                    Image(systemName: "brain.head.profile")
-                                        .font(.system(size: 60))
-                                        .foregroundColor(.secondary)
-                                    
-                                    VStack(spacing: 8) {
-                                        Text("Ask about your content")
-                                            .font(.title2)
-                                            .fontWeight(.semibold)
-                                        
-                                        Text("Search through your documents, messages, emails, and notes using natural language.")
-                                            .font(.body)
-                                            .foregroundColor(.secondary)
-                                            .multilineTextAlignment(.center)
-                                    }
-                                    
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text("Try asking:")
-                                            .font(.caption)
+                switch model.availability {
+                case .available:
+                    // chat messages
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 12) {
+                                if messages.isEmpty {
+                                    VStack(spacing: 20) {
+                                        Image(systemName: "brain.head.profile")
+                                            .font(.system(size: 60))
                                             .foregroundColor(.secondary)
                                         
-                                        SampleQuestionView(text: "What did Alice say about the project?")
-                                        SampleQuestionView(text: "Show me my emails about that machine learning conference.")
-                                        SampleQuestionView(text: "Who is the lead developer on this project?")
+                                        VStack(spacing: 8) {
+                                            Text("Ask about your content")
+                                                .font(.title2)
+                                                .fontWeight(.semibold)
+                                            
+                                            Text("Search through your documents, messages, emails, and notes using natural language.")
+                                                .font(.body)
+                                                .foregroundColor(.secondary)
+                                                .multilineTextAlignment(.center)
+                                        }
+                                        
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Text("Try asking:")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                            
+                                            SampleQuestionView(text: "What did Alice say about the project?")
+                                            SampleQuestionView(text: "Show me my emails about that machine learning conference.")
+                                            SampleQuestionView(text: "Who is the lead developer on this project?")
+                                        }
                                     }
+                                    .padding(.top, 40)
+                                    .padding(.horizontal)
                                 }
-                                .padding(.top, 40)
-                                .padding(.horizontal)
+                                
+                                ForEach(messages) { message in
+                                    ChatBubbleView(message: message)
+                                        .id(message.id)
+                                }
                             }
+                            .padding(.horizontal)
+                            .padding(.bottom, 20)
+                        }
+                        .scrollDismissesKeyboard(.interactively)
+                        .onChange(of: messages.count) { _ in
+                            if let lastMessage = messages.last {
+                                withAnimation(.easeOut(duration: 0.3)) {
+                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                }
+                            }
+                        }
+                    }
+                    
+                    // input area
+                    VStack(spacing: 0) {
+                        Divider()
+                        
+                        HStack(spacing: 12) {
+                            TextField("Ask anything", text: $inputText)
+                                .textFieldStyle(.plain)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 12)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(20)
+                                .lineLimit(1...4)
+                                .focused($isTextFieldFocused)
                             
-                            ForEach(messages) { message in
-                                ChatBubbleView(message: message)
-                                    .id(message.id)
+                            Button(action: sendMessage) {
+                                Image(systemName: isLoading ? "stop.circle.fill" : "arrow.up.circle.fill")
+                                    .font(.title2)
+                                    .foregroundColor(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .secondary : .blue)
                             }
+                            .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isLoading)
                         }
                         .padding(.horizontal)
-                        .padding(.bottom, 20)
+                        .padding(.vertical, 12)
                     }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onChange(of: messages.count) { _ in
-                        if let lastMessage = messages.last {
-                            withAnimation(.easeOut(duration: 0.3)) {
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
-                        }
-                    }
+                    .background(Color(.systemBackground))
+                case .unavailable(.deviceNotEligible):
+                    Text("Foundation Models are not available on this device.")
+                        .foregroundColor(.red)
+                case .unavailable(.appleIntelligenceNotEnabled):
+                    Text("Apple Intelligence is not enabled. Please enable it in System Settings.")
+                        .foregroundColor(.orange)
+                case .unavailable(.modelNotReady):
+                    Text("Foundation Model is not ready yet. Please try again later.")
+                        .foregroundColor(.yellow)
+                case .unavailable(let other):
+                    Text("Foundation Model is unavailable for an unknown reason: \(other)")
+                        .foregroundColor(.red)
                 }
-                
-                // input area
-                VStack(spacing: 0) {
-                    Divider()
-                    
-                    HStack(spacing: 12) {
-                        TextField("Ask anything", text: $inputText)
-                            .textFieldStyle(.plain)
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 12)
-                            .background(Color(.systemGray6))
-                            .cornerRadius(20)
-                            .lineLimit(1...4)
-                            .focused($isTextFieldFocused)
-                        
-                        Button(action: sendMessage) {
-                            Image(systemName: isLoading ? "stop.circle.fill" : "arrow.up.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .secondary : .blue)
-                        }
-                        .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isLoading)
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 12)
-                }
-                .background(Color(.systemBackground))
             }
             .navigationTitle("Recall")
             .navigationBarTitleDisplayMode(.inline)
@@ -123,41 +151,60 @@ struct HomeView: View {
         let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty else { return }
         
-        // add user message
-        let userMessage = ChatMessage(content: trimmedInput, isUser: true)
+        // Add user message
+        let userMessage = ChatMessage(content: trimmedInput, isUser: true, status: .sending)
         messages.append(userMessage)
         
-        // clear input and dismiss keyboard
+        // Add a placeholder for the assistant's response with a searching status
+        var assistantMessage = ChatMessage(content: "Searching...", isUser: false, status: .searching)
+        messages.append(assistantMessage)
+        
+        // Clear input and dismiss keyboard
         inputText = ""
         isTextFieldFocused = false
         isLoading = true
         
-        // simulate ai response with search
         Task {
             do {
+                // Perform search
                 let searchResults = try await contentService.search(trimmedInput, limit: 5)
                 
                 await MainActor.run {
-                    let responseContent: String
-                    let sources: [SearchResult]?
-                    
-                    if searchResults.isEmpty {
-                        responseContent = "I couldn't find any content related to '\(trimmedInput)'. Try adding some documents, messages, emails, or notes first."
-                        sources = nil
-                    } else {
-                        responseContent = "I found \(searchResults.count) relevant items about '\(trimmedInput)'. Here's what I discovered:"
-                        sources = searchResults
+                    if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
+                        messages[index].sources = searchResults
+                        if searchResults.isEmpty {
+                            messages[index].content = "I couldn't find any content related to '\(trimmedInput)'. Try adding some documents, messages, emails, or notes first."
+                            messages[index].status = .complete
+                            isLoading = false
+                        } else {
+                            messages[index].content = "Reading sources..."
+                            messages[index].status = .generating
+                        }
                     }
+                }
+                
+                if !searchResults.isEmpty {
+                    let session = LanguageModelSession()
+                    let context = searchResults.map { $0.thread.snippet }.joined(separator: "\n")
+                    let prompt = "Based on the following context, answer the question: \(trimmedInput)\n\nContext:\n\(context)"
                     
-                    let assistantMessage = ChatMessage(content: responseContent, isUser: false, sources: sources)
-                    messages.append(assistantMessage)
-                    isLoading = false
+                    let modelResponse = try await session.respond(to: prompt)
+                    
+                    await MainActor.run {
+                        if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
+                            messages[index].content = modelResponse.content
+                            messages[index].status = .complete
+                            isLoading = false
+                        }
+                    }
                 }
             } catch {
                 await MainActor.run {
-                    let errorMessage = ChatMessage(content: "Sorry, I ran into an error while searching. Please try again.", isUser: false)
-                    messages.append(errorMessage)
-                    isLoading = false
+                    if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
+                        messages[index].content = "Sorry, I ran into an error while searching or generating a response. Please try again."
+                        messages[index].status = .error
+                        isLoading = false
+                    }
                 }
             }
         }
@@ -178,6 +225,8 @@ struct SampleQuestionView: View {
 struct ChatBubbleView: View {
     let message: ChatMessage
     @State private var showingSources = false
+    @State private var ellipsis = ""
+    let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
     
     var body: some View {
         HStack {
@@ -186,14 +235,14 @@ struct ChatBubbleView: View {
             }
             
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 8) {
-                Text(message.content)
+                Text(message.content + (message.status == .searching || message.status == .generating ? ellipsis : ""))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background(message.isUser ? Color.blue : Color(.systemGray5))
                     .foregroundColor(message.isUser ? .white : .primary)
                     .cornerRadius(18)
                 
-                if let sources = message.sources, !sources.isEmpty {
+                if let sources = message.sources, !sources.isEmpty, (message.status == .complete || message.status == .generating) {
                     Button(action: { showingSources.toggle() }) {
                         HStack(spacing: 6) {
                             Image(systemName: showingSources ? "chevron.down" : "chevron.right")
@@ -224,6 +273,13 @@ struct ChatBubbleView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showingSources)
+        .onReceive(timer) { _ in
+            if message.status == .searching || message.status == .generating {
+                ellipsis = (ellipsis == "..." ? "" : ellipsis + ".")
+            } else {
+                ellipsis = ""
+            }
+        }
     }
 }
 
