@@ -150,25 +150,21 @@ struct HomeView: View {
     private func sendMessage() {
         let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty else { return }
-        
-        // Add user message
+
         let userMessage = ChatMessage(content: trimmedInput, isUser: true, status: .sending)
         messages.append(userMessage)
-        
-        // Add a placeholder for the assistant's response with a searching status
+
         var assistantMessage = ChatMessage(content: "Searching...", isUser: false, status: .searching)
         messages.append(assistantMessage)
-        
-        // Clear input and dismiss keyboard
+
         inputText = ""
         isTextFieldFocused = false
         isLoading = true
-        
+
         Task {
             do {
-                // Perform search
                 let searchResults = try await contentService.search(trimmedInput, limit: 5)
-                
+
                 await MainActor.run {
                     if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
                         messages[index].sources = searchResults
@@ -182,21 +178,36 @@ struct HomeView: View {
                         }
                     }
                 }
-                
+
                 if !searchResults.isEmpty {
                     let session = LanguageModelSession()
                     let context = searchResults.map { $0.thread.snippet }.joined(separator: "\n")
                     let prompt = "Based on the following context, answer the question: \(trimmedInput)\n\nContext:\n\(context)"
+
+                    let stream = session.streamResponse(
+                        to: prompt,
+                        generating: String.self,
+                        options: GenerationOptions(sampling: .greedy)
+                    )
                     
-                    let modelResponse = try await session.respond(to: prompt)
-                    
+                    var streamedContent = ""
+                    for try await partial in stream {
+                        streamedContent = partial
+                        await MainActor.run {
+                            if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
+                                messages[index].content = streamedContent
+                                messages[index].status = .generating
+                            }
+                        }
+                    }
+
                     await MainActor.run {
                         if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                            messages[index].content = modelResponse.content
                             messages[index].status = .complete
                             isLoading = false
                         }
                     }
+
                 }
             } catch {
                 await MainActor.run {
