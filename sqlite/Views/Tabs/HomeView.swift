@@ -180,14 +180,17 @@ struct HomeView: View {
                 }
 
                 if !searchResults.isEmpty {
-                    let session = LanguageModelSession()
                     let context = searchResults.map { $0.thread.snippet }.joined(separator: "\n")
-                    let prompt = "Based on the following context, answer the question: \(trimmedInput)\n\nContext:\n\(context)"
-
+                    let session = LanguageModelSession(
+                        instructions: Instructions {
+                            "You are a helpful assistant who answers user questions using the provided context from their documents, emails, notes, or messages."
+                            "Answer the following question as accurately as possible using the provided context. If the answer isn't in the context, say so."
+                        }
+                    )
+                    
                     let stream = session.streamResponse(
-                        to: prompt,
-                        generating: String.self,
-                        options: GenerationOptions(sampling: .greedy)
+                        to: Prompt("Question: \(trimmedInput)\n\nContext:\n\(context)"),
+                        generating: String.self
                     )
                     
                     var streamedContent = ""
