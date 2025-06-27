@@ -39,6 +39,13 @@ struct HomeView: View {
     @State private var inputText = ""
     @State private var isLoading = false
     @FocusState private var isTextFieldFocused: Bool
+    // Session to handle multi-turn context
+    @State private var session = LanguageModelSession(
+        instructions: Instructions {
+            "You are a helpful assistant who answers user questions using the provided context from their documents, emails, notes, or messages."
+            "Answer the following question as accurately as possible using the provided context. If the answer isn't in the context, say so."
+        }
+    )
     
     private let model = SystemLanguageModel.default
     
@@ -47,41 +54,12 @@ struct HomeView: View {
             VStack(spacing: 0) {
                 switch model.availability {
                 case .available:
-                    // chat messages
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 12) {
                                 if messages.isEmpty {
-                                    VStack(spacing: 20) {
-                                        Image(systemName: "brain.head.profile")
-                                            .font(.system(size: 60))
-                                            .foregroundColor(.secondary)
-                                        
-                                        VStack(spacing: 8) {
-                                            Text("Ask about your content")
-                                                .font(.title2)
-                                                .fontWeight(.semibold)
-                                            
-                                            Text("Search through your documents, messages, emails, and notes using natural language.")
-                                                .font(.body)
-                                                .foregroundColor(.secondary)
-                                                .multilineTextAlignment(.center)
-                                        }
-                                        
-                                        VStack(alignment: .leading, spacing: 8) {
-                                            Text("Try asking:")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                            
-                                            SampleQuestionView(text: "What did Alice say about the project?")
-                                            SampleQuestionView(text: "Show me my emails about that machine learning conference.")
-                                            SampleQuestionView(text: "Who is the lead developer on this project?")
-                                        }
-                                    }
-                                    .padding(.top, 40)
-                                    .padding(.horizontal)
+                                    EmptyStateView()
                                 }
-                                
                                 ForEach(messages) { message in
                                     ChatBubbleView(message: message)
                                         .id(message.id)
@@ -92,9 +70,9 @@ struct HomeView: View {
                         }
                         .scrollDismissesKeyboard(.interactively)
                         .onChange(of: messages.count) { _ in
-                            if let lastMessage = messages.last {
+                            if let last = messages.last {
                                 withAnimation(.easeOut(duration: 0.3)) {
-                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                    proxy.scrollTo(last.id, anchor: .bottom)
                                 }
                             }
                         }
@@ -141,86 +119,159 @@ struct HomeView: View {
             }
             .navigationTitle("Recall")
             .navigationBarTitleDisplayMode(.inline)
-            .onTapGesture {
-                isTextFieldFocused = false
+            .onTapGesture { isTextFieldFocused = false }
+            .task {
+                do {
+                    session.prewarm()
+                    print("Session prewarmed successfully.")
+                }
             }
         }
     }
     
+    // Send user message and handle multi-turn context
     private func sendMessage() {
-        let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedInput.isEmpty else { return }
-
-        let userMessage = ChatMessage(content: trimmedInput, isUser: true, status: .sending)
-        messages.append(userMessage)
-
-        var assistantMessage = ChatMessage(content: "Searching...", isUser: false, status: .searching)
-        messages.append(assistantMessage)
-
+        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        // Append user message
+        let userMsg = ChatMessage(content: trimmed, isUser: true, status: .sending)
+        messages.append(userMsg)
+        
+        // Append placeholder assistant message
+        var assistantMsg = ChatMessage(content: "Searching...", isUser: false, status: .searching)
+        messages.append(assistantMsg)
+        
         inputText = ""
         isTextFieldFocused = false
         isLoading = true
-
+        
         Task {
             do {
-                let searchResults = try await contentService.search(trimmedInput, limit: 5)
-
+                let searchResults = try await contentService.search(trimmed, limit: 5)
+                
                 await MainActor.run {
-                    if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                        messages[index].sources = searchResults
+                    if let idx = messages.firstIndex(where: { $0.id == assistantMsg.id }) {
+                        messages[idx].sources = searchResults
                         if searchResults.isEmpty {
-                            messages[index].content = "I couldn't find any content related to '\(trimmedInput)'. Try adding some documents, messages, emails, or notes first."
-                            messages[index].status = .complete
+                            messages[idx].content = "I couldn’t find any content related to ‘\(trimmed)’. Try adding some documents, messages, emails, or notes first."
+                            messages[idx].status = .complete
                             isLoading = false
                         } else {
-                            messages[index].content = "Reading sources..."
-                            messages[index].status = .generating
+                            messages[idx].content = "Reading sources..."
+                            messages[idx].status = .generating
                         }
                     }
                 }
-
+                
                 if !searchResults.isEmpty {
                     let context = searchResults.map { $0.thread.snippet }.joined(separator: "\n")
-                    let session = LanguageModelSession(
-                        instructions: Instructions {
-                            "You are a helpful assistant who answers user questions using the provided context from their documents, emails, notes, or messages."
-                            "Answer the following question as accurately as possible using the provided context. If the answer isn't in the context, say so."
-                        }
-                    )
                     
-                    let stream = session.streamResponse(
-                        to: Prompt("Question: \(trimmedInput)\n\nContext:\n\(context)"),
-                        generating: String.self
-                    )
+                    // Build prompt based on whether this is the first turn
+                    let promptText: String
+                    if session.transcript.entries.count == 0 {
+                        // Initial prompt
+                        promptText = "Question: \(trimmed)\n\nContext:\n\(context)"
+                    } else {
+                        // Follow-up prompt includes conversation history
+                        let history = messages
+                            .filter { $0.status == .complete }
+                            .map { msg in
+                                (msg.isUser ? "User: " : "Assistant: ") + msg.content
+                            }
+                            .joined(separator: "\n\n")
+                        
+                        print(history)
+                        
+                        promptText = "The conversation so far:\n\(history)\n\nFollow-up question: \(trimmed)\n\n New Context:\n\(context)"
+                    }
                     
-                    var streamedContent = ""
-                    for try await partial in stream {
-                        streamedContent = partial
+                    // Stream response
+                    let stream = session
+                        .streamResponse(
+                            to: Prompt(promptText),
+                            generating: String.self
+                        )
+                    var responseText = ""
+                    for try await part in stream {
+                        responseText = part
                         await MainActor.run {
-                            if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                                messages[index].content = streamedContent
-                                messages[index].status = .generating
+                            if let idx = messages.firstIndex(where: { $0.id == assistantMsg.id }) {
+                                messages[idx].content = responseText
+                                messages[idx].status = .generating
                             }
                         }
                     }
-
+                    
                     await MainActor.run {
-                        if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                            messages[index].status = .complete
+                        if let idx = messages.firstIndex(where: { $0.id == assistantMsg.id }) {
+                            messages[idx].status = .complete
                             isLoading = false
                         }
                     }
-
                 }
             } catch {
                 await MainActor.run {
-                    if let index = messages.firstIndex(where: { $0.id == assistantMessage.id }) {
-                        messages[index].content = "Sorry, I ran into an error while searching or generating a response. Please try again."
-                        messages[index].status = .error
+                    if let idx = messages.firstIndex(where: { $0.id == assistantMsg.id }) {
+                        messages[idx].content = "Sorry, I ran into an error while searching or generating a response. Please try again."
+                        messages[idx].status = .error
                         isLoading = false
                     }
                 }
             }
+        }
+    }
+}
+
+// MARK: - Supporting Views
+
+private struct EmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "brain.head.profile")
+                .font(.system(size: 60))
+                .foregroundColor(.secondary)
+            VStack(spacing: 8) {
+                Text("Ask about your content")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text("Search through your documents, messages, emails, and notes using natural language.")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Try asking:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                SampleQuestionView(text: "What did Alice say about the project?")
+                SampleQuestionView(text: "Show me my emails about that machine learning conference.")
+                SampleQuestionView(text: "Who is the lead developer on this project?")
+            }
+        }
+        .padding(.top, 40)
+        .padding(.horizontal)
+    }
+}
+
+private struct UnavailableView: View {
+    let model: SystemLanguageModel
+    var body: some View {
+        switch model.availability {
+        case .unavailable(.deviceNotEligible):
+            Text("Foundation Models are not available on this device.")
+                .foregroundColor(.red)
+        case .unavailable(.appleIntelligenceNotEnabled):
+            Text("Apple Intelligence is not enabled. Please enable it in System Settings.")
+                .foregroundColor(.orange)
+        case .unavailable(.modelNotReady):
+            Text("Foundation Model is not ready yet. Please try again later.")
+                .foregroundColor(.yellow)
+        case .unavailable(let other):
+            Text("Foundation Model is unavailable for an unknown reason: \(other)")
+                .foregroundColor(.red)
+        default:
+            EmptyView()
         }
     }
 }
