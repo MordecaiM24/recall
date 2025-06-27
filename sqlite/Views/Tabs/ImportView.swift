@@ -49,6 +49,14 @@ struct AddContentView: View {
                         ) {
                             selectedTab = 3
                         }
+                        
+                        TabSelectorButton(
+                            title: "Delete",
+                            icon: "❌",
+                            isSelected: selectedTab == 4
+                        ) {
+                            selectedTab = 4
+                        }
                     }
                     .padding(.horizontal)
                 }
@@ -68,6 +76,12 @@ struct AddContentView: View {
                     
                     ImportNotesView()
                         .tag(3)
+                    
+                    Button("Delete All") {
+                        contentService.clearAll()
+                        print("deleted")
+                    }
+                        .tag(4)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
             }

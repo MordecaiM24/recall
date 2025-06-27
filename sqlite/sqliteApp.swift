@@ -9,22 +9,48 @@ import SwiftUI
 
 @main
 struct ContentApp: App {
-    @StateObject private var contentService: ContentService
-    
-    init() {
-        do {
-            let temp = try ContentService()
-            _contentService = StateObject(wrappedValue: temp)
-        } catch {
-            fatalError("failed to initialize content service: \(error)")
-        }
-    }
+    @StateObject private var contentService = AsyncContentServiceLoader()
     
     var body: some Scene {
         WindowGroup {
-            MainTabView()
-                .environmentObject(contentService)
+            if contentService.isLoaded {
+                MainTabView()
+                    .environmentObject(contentService.service!)
+            } else {
+                LoadingView()
+            }
         }
     }
 }
 
+class AsyncContentServiceLoader: ObservableObject {
+    @Published var isLoaded = false
+    @Published var service: ContentService?
+    
+    init() {
+        Task {
+            let contentService = try await withCheckedThrowingContinuation { continuation in
+                Task.detached {
+                    do {
+                        let service = try ContentService()
+                        continuation.resume(returning: service)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+            
+            await MainActor.run {
+                self.service = contentService
+                self.isLoaded = true
+            }
+        }
+    }
+}
+
+struct LoadingView: View {
+    var body: some View {
+        Image(systemName: "books.vertical.circle")
+            .font(.system(size: 192))
+    }
+}

@@ -10,13 +10,14 @@ import SwiftUI
 struct SearchView: View {
     @EnvironmentObject var contentService: ContentService
     @State private var searchText = ""
-    @State private var searchResults: [UnifiedContent] = []
+    @State private var searchResults: [SearchResult] = []
     @State private var selectedContentTypes: Set<ContentType> = Set(ContentType.allCases)
     @State private var isLoading = false
     @State private var showingFilters = false
+    @FocusState private var isTextFieldFocused: Bool
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 // search bar and filters
                 VStack(spacing: 12) {
@@ -29,6 +30,8 @@ struct SearchView: View {
                             .onSubmit {
                                 performSearch()
                             }
+                            .focused($isTextFieldFocused)
+
                         
                         if !searchText.isEmpty {
                             Button(action: { searchText = "" }) {
@@ -95,13 +98,11 @@ struct SearchView: View {
             }
             .navigationTitle("search")
             .navigationBarTitleDisplayMode(.inline)
-        }
-        .animation(.easeInOut(duration: 0.2), value: showingFilters)
-        .onChange(of: searchText) { newValue in
-            if newValue.isEmpty {
-                searchResults = []
+            .onTapGesture {
+                isTextFieldFocused = false
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: showingFilters)
     }
     
     private func performSearch() {
@@ -114,15 +115,18 @@ struct SearchView: View {
         isLoading = true
         
         Task {
-            let results = await contentService.search(
-                query: trimmedText,
-                limit: 50,
-                contentTypes: Array(selectedContentTypes)
-            )
-            
-            await MainActor.run {
-                searchResults = results
-                isLoading = false
+            do {
+                let results = try await contentService.search(trimmedText, limit: 50)
+                print(results)
+                await MainActor.run {
+                    searchResults = results
+                    isLoading = false
+                }
+            } catch {
+                print("Error searching: \(error)")
+                await MainActor.run {
+                    isLoading = false
+                }
             }
         }
     }
@@ -211,13 +215,13 @@ struct NoResultsView: View {
 }
 
 struct SearchResultsList: View {
-    let results: [UnifiedContent]
+    let results: [SearchResult]
     
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 12) {
                 ForEach(results) { result in
-                    SearchResultCard(content: result)
+                    SearchResultCard(searchResult: result)
                 }
             }
             .padding()
@@ -226,24 +230,19 @@ struct SearchResultsList: View {
 }
 
 struct SearchResultCard: View {
-    let content: UnifiedContent
+    let searchResult: SearchResult
     @State private var showingDetail = false
     
     var body: some View {
         Button(action: { showingDetail = true }) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
-                    Image(systemName: content.typeIcon)
+                    Image(systemName: searchResult.thread.type.icon)
                         .font(.title2)
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(content.displayTitle)
-                            .font(.headline)
-                            .fontWeight(.semibold)
-                            .multilineTextAlignment(.leading)
-                        
                         HStack {
-                            Text(content.type.displayName)
+                            Text(searchResult.thread.type.displayName)
                                 .font(.caption)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 2)
@@ -251,23 +250,16 @@ struct SearchResultCard: View {
                                 .foregroundColor(.blue)
                                 .cornerRadius(4)
                             
-                            Text(content.formattedDate)
+                            Text(searchResult.thread.created, style: .date)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
-                            
-                            Spacer()
-                            
-                            Text(content.similarityPercentage)
-                                .font(.caption)
-                                .fontWeight(.medium)
-                                .foregroundColor(.green)
                         }
                     }
                     
                     Spacer()
                 }
                 
-                Text(content.snippet)
+                Text(searchResult.thread.snippet)
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.leading)
@@ -280,7 +272,7 @@ struct SearchResultCard: View {
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showingDetail) {
-            ContentDetailView(content: content)
+            ContentDetailView(item: searchResult.items.first!)
         }
     }
 }

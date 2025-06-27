@@ -6,16 +6,15 @@
 //
 
 import SwiftUI
-import FoundationModels
 
 struct ChatMessage: Identifiable {
     let id = UUID()
     let content: String
     let isUser: Bool
     let timestamp: Date
-    let sources: [UnifiedContent]?
+    let sources: [SearchResult]?
     
-    init(content: String, isUser: Bool, sources: [UnifiedContent]? = nil) {
+    init(content: String, isUser: Bool, sources: [SearchResult]? = nil) {
         self.content = content
         self.isUser = isUser
         self.timestamp = Date()
@@ -29,8 +28,6 @@ struct HomeView: View {
     @State private var inputText = ""
     @State private var isLoading = false
     @FocusState private var isTextFieldFocused: Bool
-    
-    private var lmSession = LanguageModelSession()
     
     var body: some View {
         NavigationView {
@@ -123,61 +120,46 @@ struct HomeView: View {
     }
     
     private func sendMessage() {
-        let query = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return }
+        let trimmedInput = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedInput.isEmpty else { return }
         
-        messages.append(.init(content: query, isUser: true))
+        // add user message
+        let userMessage = ChatMessage(content: trimmedInput, isUser: true)
+        messages.append(userMessage)
+        
+        // clear input and dismiss keyboard
         inputText = ""
         isTextFieldFocused = false
         isLoading = true
         
+        // simulate ai response with search
         Task {
-            let results = await contentService.search(query: query, limit: 5)
-            
-            // basic response
-//            let baseContent: String
-//            if results.isEmpty {
-//                baseContent = "couldn't find any content for '\(query)'. add some docs or notes first."
-//            } else {
-//                baseContent = "found \(results.count) items for '\(query)':"
-//            }
-//            await MainActor.run {
-//                messages.append(.init(content: baseContent, isUser: false, sources: results))
-//            }
-            
-            // if there are results, run summarization & reranking
-            if !results.isEmpty {
-                // prepare text
-                let combined = results.map { "\($0.displayTitle): \($0.snippet)" }.joined(separator: "\n")
+            do {
+                let searchResults = try await contentService.search(trimmedInput, limit: 5)
                 
-                // summarization
-                do {
-                    let sumPrompt = "summarize the following items concisely:\n\(combined)"
-                    let summary = try await lmSession.respond(to: sumPrompt)
-                    await MainActor.run {
-                        messages.append(.init(content: "summary: \(summary)", isUser: false))
+                await MainActor.run {
+                    let responseContent: String
+                    let sources: [SearchResult]?
+                    
+                    if searchResults.isEmpty {
+                        responseContent = "I couldn't find any content related to '\(trimmedInput)'. Try adding some documents, messages, emails, or notes first."
+                        sources = nil
+                    } else {
+                        responseContent = "I found \(searchResults.count) relevant items about '\(trimmedInput)'. Here's what I discovered:"
+                        sources = searchResults
                     }
-                } catch {}
-                
-                // reranking
-                do {
-                    let rankPrompt = "rank these items by relevance to '\(query)', list titles in order:\n\(results.map{$0.displayTitle}.joined(separator: "\n"))"
-                    let ranking = try await lmSession.respond(to: rankPrompt)
-                    await MainActor.run {
-                        messages.append(.init(content: "reranking:\n\(ranking)", isUser: false))
-                    }
-                } catch {}
-            } else {
-                do {
-                    let sumPrompt = "write a message to the user saying that you couldn't find any info for them"
-                    let summary = try await lmSession.respond(to: sumPrompt)
-                    await MainActor.run {
-                        messages.append(.init(content: "summary: \(summary)", isUser: false))
-                    }
-                } catch {}
+                    
+                    let assistantMessage = ChatMessage(content: responseContent, isUser: false, sources: sources)
+                    messages.append(assistantMessage)
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    let errorMessage = ChatMessage(content: "Sorry, I ran into an error while searching. Please try again.", isUser: false)
+                    messages.append(errorMessage)
+                    isLoading = false
+                }
             }
-            
-            await MainActor.run { isLoading = false }
         }
     }
 }
@@ -225,7 +207,7 @@ struct ChatBubbleView: View {
                     if showingSources {
                         LazyVStack(spacing: 8) {
                             ForEach(sources) { source in
-                                SourceCardView(content: source)
+                                SourceCardView(searchResult: source)
                             }
                         }
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -246,40 +228,25 @@ struct ChatBubbleView: View {
 }
 
 struct SourceCardView: View {
-    let content: UnifiedContent
+    let searchResult: SearchResult
     @State private var showingDetail = false
     
     var body: some View {
         Button(action: { showingDetail = true }) {
             HStack(spacing: 12) {
-                Image(systemName: content.typeIcon)
+                Image(systemName: searchResult.thread.type.icon)
                     .font(.title2)
                 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(content.displayTitle)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .multilineTextAlignment(.leading)
-                    
-                    Text(content.snippet)
+                    Text(searchResult.thread.snippet)
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
                     
                     HStack {
-                        Text(content.formattedDate)
+                        Text(searchResult.thread.created, style: .date)
                             .font(.caption2)
-                        
-                        Spacer()
-                        
-                        Text(content.similarityPercentage)
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.1))
-                            .foregroundColor(.blue)
-                            .cornerRadius(4)
                     }
                 }
                 
@@ -296,7 +263,7 @@ struct SourceCardView: View {
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showingDetail) {
-            ContentDetailView(content: content)
+            ContentDetailView(item: searchResult.items.first!)
         }
     }
 }

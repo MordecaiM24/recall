@@ -1,7 +1,7 @@
 //
 //  embeddingTests.swift
 //  embeddingTests
-// 
+//
 //  Created by Mordecai Mengesteab on 5/25/25.
 //
 
@@ -10,15 +10,12 @@ import Testing
 
 import XCTest
 
-
 class EmbeddingServiceTests: XCTestCase {
     
     var embeddingService: EmbeddingService!
     
     override func setUp() {
         super.setUp()
-        // Initialize before each test
-        // This will fail fast if service can't be created
         embeddingService = try! EmbeddingService()
     }
     
@@ -30,33 +27,30 @@ class EmbeddingServiceTests: XCTestCase {
     // MARK: - Tokenization Tests
     
     func testEmptyStringTokenization() {
-        // Logic: Empty strings shouldn't crash and should produce valid tokens
-        // Common failure: tokenizer crashes on empty input or produces malformed output
+        // empty strings shouldn't crash and should produce valid tokens
         let tokenizer = try! BertTokenizer()
         let result = try! tokenizer.encode(text: "", maxLength: 512)
         
         XCTAssertEqual(result.inputIds.count, 512, "Should pad to max length")
         XCTAssertEqual(result.attentionMask.count, 512, "Attention mask should match")
         
-        // Should have [CLS] and [SEP] tokens at minimum
+        // should have [CLS] and [SEP] tokens at minimum
         XCTAssertGreaterThan(result.attentionMask.prefix(10).reduce(0, +), 0, "Should have some real tokens")
     }
     
     func testUnicodeTokenization() {
-        // Logic: Unicode should be handled without crashing or corruption
-        // Common failure: tokenizer mangles unicode or produces garbage tokens
+        // unicode (non-ascii) should be handled without crashing or corruption
         let unicodeText = "Hello 🌍 café naïve 中文"
         let tokenizer = try! BertTokenizer()
         
         XCTAssertNoThrow(try tokenizer.encode(text: unicodeText, maxLength: 512),
-                        "Unicode text should tokenize without crashing")
+                         "Unicode text should tokenize without crashing")
     }
     
     // MARK: - Embedding Consistency Tests
     
     func testSameTextSameEmbedding() async {
-        // Logic: Identical input should always produce identical output
-        // Critical for caching and reproducibility
+        // identical input should always produce identical output
         let text = "This is a test document"
         
         let embedding1 = try! await embeddingService.embed(text: text)
@@ -64,21 +58,20 @@ class EmbeddingServiceTests: XCTestCase {
         
         XCTAssertEqual(embedding1.count, embedding2.count, "Embeddings should have same length")
         
-        // Compare each element (floating point comparison with tolerance)
+        // compare each element (floating point comparison with tolerance)
         for i in 0..<embedding1.count {
             XCTAssertEqual(embedding1[i], embedding2[i], accuracy: 0.0001,
-                          "Embedding values should be identical at index \(i)")
+                           "Embedding values should be identical at index \(i)")
         }
     }
     
     func testEmptyStringEmbedding() async {
-        // Logic: Empty string should produce valid embedding, not crash or return zeros
-        // Common failure: model returns all zeros or crashes on empty input
+        // empty string should produce valid embedding, not crash or return zeros
         let embedding = try! await embeddingService.embed(text: "")
         
         XCTAssertEqual(embedding.count, 384, "Should produce correct dimension embedding")
         
-        // Should not be all zeros (model should still output something meaningful)
+        // should not be all zeros (model should still output something meaningful)
         let magnitude = embedding.reduce(0) { $0 + $1 * $1 }
         XCTAssertGreaterThan(magnitude, 0.1, "Embedding should not be near-zero vector")
     }
@@ -86,8 +79,7 @@ class EmbeddingServiceTests: XCTestCase {
     // MARK: - Vector Properties Tests
     
     func testEmbeddingDimensions() async {
-        // Logic: All embeddings should have exactly 384 dimensions
-        // Critical for database storage and vector search
+        // all embeddings should have exactly 384 dimensions
         let texts = ["short", "medium length text", "This is a much longer piece of text that should still produce the same dimension output"]
         
         for text in texts {
@@ -97,8 +89,8 @@ class EmbeddingServiceTests: XCTestCase {
     }
     
     func testNoInvalidValues() async {
-        // Logic: Embeddings should never contain NaN or infinite values
-        // Common failure: model produces NaN on edge cases, breaks vector math
+        // embeddings should never contain NaN or infinite values
+        // common failure: model produces NaN on edge cases, breaks vector math
         let texts = ["", "normal text", "!!!", "123", "🎉🎉🎉"]
         
         for text in texts {
@@ -113,8 +105,8 @@ class EmbeddingServiceTests: XCTestCase {
     }
     
     func testReasonableValueRange() async {
-        // Logic: Embedding values should be in reasonable range (typically -2 to 2)
-        // Sanity check that model isn't producing garbage
+        // sanity check that model isn't producing garbage
+        // embedding values should be in reasonable range (typically -2 to 2)
         let embedding = try! await embeddingService.embed(text: "normal text")
         
         for (i, value) in embedding.enumerated() {
@@ -126,8 +118,7 @@ class EmbeddingServiceTests: XCTestCase {
     // MARK: - Similarity Logic Tests
     
     func testIdenticalTextHighSimilarity() async {
-        // Logic: Identical text should have very high similarity (cosine distance near 0)
-        // Critical for search quality
+        // identical text should have very high similarity (cosine distance near 0)
         let text = "This is a test document"
         let embedding1 = try! await embeddingService.embed(text: text)
         let embedding2 = try! await embeddingService.embed(text: text)
@@ -137,8 +128,8 @@ class EmbeddingServiceTests: XCTestCase {
     }
     
     func testRelatedTextSimilarity() async {
-        // Logic: Related text should be more similar than unrelated text
-        // This is the core functionality of your search
+        // related text should be more similar than unrelated text
+        // pretty much the most important possible thing here lol
         let doc1 = "This is a document about dogs and puppies"
         let doc2 = "This document discusses cats and kittens"
         let unrelated = "The stock market closed higher today"
@@ -151,15 +142,15 @@ class EmbeddingServiceTests: XCTestCase {
         let similarityUnrelated1 = cosineSimilarity(embed1, embedUnrelated)
         let similarityUnrelated2 = cosineSimilarity(embed2, embedUnrelated)
         
-        // Related animal docs should be more similar to each other than to stock market doc
+        // related animal docs should be more similar to each other than to stock market doc
         XCTAssertGreaterThan(similarityRelated, similarityUnrelated1,
-                           "Related docs should be more similar than unrelated")
+                             "Related docs should be more similar than unrelated")
         XCTAssertGreaterThan(similarityRelated, similarityUnrelated2,
-                           "Related docs should be more similar than unrelated")
+                             "Related docs should be more similar than unrelated")
     }
     
     func testKeywordOverlapSimilarity() async {
-        // Logic: Docs with shared keywords should be more similar than completely different docs
+        // docs with shared keywords should be more similar than completely different docs
         let doc1 = "machine learning algorithms"
         let doc2 = "artificial intelligence and machine learning"
         let unrelated = "cooking recipes for dinner"
@@ -172,14 +163,13 @@ class EmbeddingServiceTests: XCTestCase {
         let similarityUnrelated = cosineSimilarity(embed1, embedUnrelated)
         
         XCTAssertGreaterThan(similaritySharedKeywords, similarityUnrelated,
-                           "Docs with shared keywords should be more similar")
+                             "Docs with shared keywords should be more similar")
     }
     
     // MARK: - Model Robustness Tests
     
     func testConcurrentEmbedding() async {
-        // Logic: Multiple embedding requests shouldn't interfere with each other
-        // Important for real app usage where user might trigger multiple searches
+        // multiple embedding requests shouldn't interfere with each other
         let texts = ["text one", "text two", "text three", "text four"]
         
         await withTaskGroup(of: [Float].self) { group in
@@ -200,42 +190,41 @@ class EmbeddingServiceTests: XCTestCase {
     }
     
     func testBatchProcessing() async {
-        // Logic: Batch embedding should produce same results as individual embedding
-        // Critical if you implement batch optimization later
+        // batch embedding should produce same results as individual embedding
         let texts = ["first text", "second text", "third text"]
         
-        // Individual embeddings
+        // individual embeddings
         var individualEmbeddings: [[Float]] = []
         for text in texts {
             let embedding = try! await embeddingService.embed(text: text)
             individualEmbeddings.append(embedding)
         }
         
-        // Batch embeddings
+        // batch embeddings
         let batchEmbeddings = try! await embeddingService.embed(texts: texts)
         
         XCTAssertEqual(individualEmbeddings.count, batchEmbeddings.count,
-                      "Batch should produce same number of embeddings")
+                       "Batch should produce same number of embeddings")
         
         for i in 0..<texts.count {
             let individual = individualEmbeddings[i]
             let batch = batchEmbeddings[i]
             
             XCTAssertEqual(individual.count, batch.count,
-                          "Individual and batch embeddings should have same dimensions")
+                           "Individual and batch embeddings should have same dimensions")
             
-            // They should be identical (within floating point precision)
+            // should be identical (within floating point precision)
             for j in 0..<individual.count {
                 XCTAssertEqual(individual[j], batch[j], accuracy: 0.0001,
-                              "Individual and batch embeddings should be identical for text \(i), element \(j)")
+                               "Individual and batch embeddings should be identical for text \(i), element \(j)")
             }
         }
     }
     
     // MARK: - Helper Functions
     
-    /// Calculate cosine similarity between two embeddings
-    /// Returns value between -1 and 1, where 1 is identical
+    /// calculate cosine similarity between two embeddings
+    /// returns value between -1 and 1, where 1 is identical
     private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
         guard a.count == b.count else { return 0 }
         
@@ -246,73 +235,5 @@ class EmbeddingServiceTests: XCTestCase {
         guard magnitudeA > 0 && magnitudeB > 0 else { return 0 }
         
         return dotProduct / (magnitudeA * magnitudeB)
-    }
-}
-
-// MARK: - SQLite Integration Tests
-
-class SQLiteEmbeddingTests: XCTestCase {
-    
-    var sqliteService: SQLiteService!
-    var embeddingService: EmbeddingService!
-    
-    override func setUp() {
-        super.setUp()
-        // Use in-memory database for tests
-        sqliteService = try! SQLiteService(path: ":memory:", embeddingDimensions: 384)
-        try! sqliteService.setupDatabase()
-        embeddingService = try! EmbeddingService()
-    }
-    
-    func testEmbeddingStorageRoundTrip() async {
-        // Logic: Embeddings stored in SQLite should be identical when retrieved
-        // Critical for search accuracy - any corruption breaks everything
-        let text = "test document for storage"
-        let originalEmbedding = try! await embeddingService.embed(text: text)
-        
-        let documentId = try! sqliteService.insertDocument(
-            title: "Test",
-            content: text,
-            embedding: originalEmbedding
-        )
-        
-        let retrievedDoc = try! sqliteService.findDocument(id: documentId)
-        XCTAssertNotNil(retrievedDoc, "Should be able to retrieve stored document")
-        
-        // Note: This test assumes your SQLiteService can retrieve embeddings
-        // You might need to add this functionality if it doesn't exist
-    }
-    
-    func testVectorSearchOrdering() async {
-        // Logic: Vector search should return results in correct similarity order
-        // Critical for search relevance
-        let query = "artificial intelligence"
-        let queryEmbedding = try! await embeddingService.embed(text: query)
-        
-        // Insert documents with varying relevance
-        let docs = [
-            ("Highly Relevant", "artificial intelligence and machine learning"),
-            ("Somewhat Relevant", "computer science and algorithms"),
-            ("Not Relevant", "cooking recipes and food")
-        ]
-        
-        for (title, content) in docs {
-            let embedding = try! await embeddingService.embed(text: content)
-            _ = try! sqliteService.insertDocument(title: title, content: content, embedding: embedding)
-        }
-        
-        let results = try! sqliteService.searchDocuments(queryEmbedding: queryEmbedding, limit: 10)
-        
-        XCTAssertGreaterThanOrEqual(results.count, 3, "Should find all inserted documents")
-        
-        // Results should be ordered by distance (most similar first)
-        for i in 0..<(results.count - 1) {
-            XCTAssertLessThanOrEqual(results[i].distance, results[i + 1].distance,
-                                   "Results should be ordered by increasing distance")
-        }
-        
-        // Most relevant should be first
-        XCTAssertEqual(results[0].document.title, "Highly Relevant",
-                      "Most relevant document should be returned first")
     }
 }

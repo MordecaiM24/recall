@@ -70,36 +70,28 @@ class BertTokenizer {
         return tokens
     }
     
-    private func convertTokensToIds(tokens: [String]) throws -> [Int] {
-        if tokens.count > maxLen {
-            throw TokenizerError.tooLong(
-                "Token sequence length (\(tokens.count)) exceeds maximum length (\(maxLen))"
-            )
-        }
-        return tokens.compactMap { vocab[$0] }
-    }
-    
     /// Main entry point for sentence transformer models
     func encode(text: String, maxLength: Int = 512) throws -> TokenizationResult {
         // Tokenize the text
         let tokens = tokenize(text: text)
         
         // Add special tokens: [CLS] + tokens + [SEP]
-        let specialTokens = ["[CLS]"] + tokens + ["[SEP]"]
+        let withSpecials = ["[CLS]"] + tokens + ["[SEP]"]
+        
+        // Truncate non special tokens
+        let truncated = Array(withSpecials.prefix(maxLength))
         
         // Convert to IDs
-        let tokenIds = try convertTokensToIds(tokens: specialTokens)
+        let tokenIds = truncated.map { vocab[$0] ?? vocab["[UNK]"]! }
         
-        // Truncate if needed
-        let truncatedIds = Array(tokenIds.prefix(maxLength))
         
         // Create attention mask (1 for real tokens, 0 for padding)
-        let realTokenCount = truncatedIds.count
+        let realTokenCount = tokenIds.count
         let attentionMask = Array(repeating: 1, count: realTokenCount) +
-                          Array(repeating: 0, count: maxLength - realTokenCount)
+        Array(repeating: 0, count: maxLength - realTokenCount)
         
         // Pad input IDs to maxLength
-        let paddedIds = truncatedIds + Array(repeating: 0, count: maxLength - realTokenCount)
+        let paddedIds = tokenIds + Array(repeating: 0, count: maxLength - realTokenCount)
         
         return TokenizationResult(inputIds: paddedIds, attentionMask: attentionMask)
     }
@@ -296,3 +288,169 @@ final class EmbeddingService {
         }
     }
 }
+
+
+
+struct ChunkingConfig {
+    let windowSize: Int = 512
+    let overlapSize: Int
+    
+    init(overlapSize: Int = 128) {
+        self.overlapSize = overlapSize
+    }
+}
+
+
+extension EmbeddingService {
+    func createThreadChunks(
+        from thread: Thread,
+        config: ChunkingConfig = ChunkingConfig()
+    ) async throws -> [ThreadChunk] {
+        let content = thread.content
+        let threadId = thread.id
+        let parentIds = thread.itemIds
+        
+        let type = thread.type
+        
+        let allTokens = tokenizer.tokenize(text: content)
+        
+        var chunks: [ThreadChunk] = []
+        
+        guard !allTokens.isEmpty else {
+            return chunks
+        }
+        
+        var chunkIndex = 0
+        var startTokenIndex = 0
+        
+        while startTokenIndex < allTokens.count {
+            let endTokenIndex = min(startTokenIndex + config.windowSize, allTokens.count)
+            
+            let chunkTokens = Array(allTokens[startTokenIndex ..< endTokenIndex])
+            
+            let chunkText = reconstructTextFromTokens(chunkTokens)
+            
+            let (startPos, endPos) = calculateCharacterPositions(
+                content: content,
+                tokens: allTokens,
+                startTokenIndex: startTokenIndex,
+                endTokenIndex: endTokenIndex
+            )
+            
+            let embedding = try await embed(text: chunkText)
+            
+            let chunk = ThreadChunk(
+                threadId: threadId,
+                parentIds: parentIds,
+                type: type,
+                content: chunkText,
+                embedding: embedding,
+                chunkIndex: chunkIndex,
+                startPosition: startPos,
+                endPosition: endPos
+            )
+            
+            chunks.append(chunk)
+            chunkIndex += 1
+            
+            let stepSize = config.windowSize - config.overlapSize
+            startTokenIndex += stepSize
+            
+            if endTokenIndex >= allTokens.count {
+                break
+            }
+        }
+        
+        return chunks
+    }
+    
+    private func reconstructTextFromTokens(_ tokens: [String]) -> String {
+        let cleanedTokens = tokens.map { token in
+            if token.hasPrefix("##") {
+                return String(token.dropFirst(2))
+            }
+            return token
+        }.filter { !["[CLS]", "[SEP]", "[PAD]"].contains($0) }
+        
+        
+        return cleanedTokens.joined(separator: " ")
+    }
+    
+    func calculateCharacterPositions(content: String, tokens: [String], startTokenIndex: Int, endTokenIndex: Int) -> (Int, Int) {
+        
+        guard !tokens.isEmpty else { return (0,0) }
+        
+        let startToken = findFirstContentToken(tokens: tokens, fromIndex: startTokenIndex)
+        let endToken = findLastContentToken(tokens: tokens, toIndex: endTokenIndex - 1)
+        
+        let lowercaseContent = content.lowercased()
+        
+        let startPos: Int
+        if let startToken = startToken {
+            let cleanToken = cleanTokenForSearch(startToken)
+            
+            if let range = lowercaseContent.range(of: cleanToken) {
+                startPos = lowercaseContent.distance(from: lowercaseContent.startIndex, to: range.lowerBound)
+            } else {
+                startPos = 0
+            }
+        } else {
+            startPos = 0
+        }
+        
+        let endPos: Int
+        if let endToken = endToken {
+            let cleanToken = cleanTokenForSearch(endToken)
+            // search from start position to avoid matching earlier occurrences
+            let searchStart = lowercaseContent.index(lowercaseContent.startIndex, offsetBy: startPos)
+            let searchRange = searchStart..<lowercaseContent.endIndex
+            
+            if let range = lowercaseContent.range(of: cleanToken, options: .backwards, range: searchRange) {
+                endPos = lowercaseContent.distance(from: lowercaseContent.startIndex, to: range.upperBound)
+            } else {
+                endPos = content.count
+            }
+        } else {
+            endPos = content.count
+        }
+        
+        return (startPos, min(endPos, content.count))
+        
+    }
+    
+    private func findFirstContentToken(tokens: [String], fromIndex: Int) -> String? {
+        let specialTokens = Set(["[CLS]", "[SEP]", "[PAD]", "[UNK]", "[MASK]"])
+        
+        for i in fromIndex..<tokens.count {
+            let token = tokens[i]
+            if !specialTokens.contains(token) && !token.isEmpty {
+                return token
+            }
+        }
+        return nil
+    }
+    
+    private func findLastContentToken(tokens: [String], toIndex: Int) -> String? {
+        let specialTokens = Set(["[CLS]", "[SEP]", "[PAD]", "[UNK]", "[MASK]"])
+        
+        for i in stride(from: toIndex, through: 0, by: -1) {
+            let token = tokens[i]
+            if !specialTokens.contains(token) && !token.isEmpty {
+                return token
+            }
+        }
+        return nil
+    }
+    
+    private func cleanTokenForSearch(_ token: String) -> String {
+        // remove wordpiece prefix and clean for searching
+        var cleaned = token
+        if cleaned.hasPrefix("##") {
+            cleaned = String(cleaned.dropFirst(2))
+        }
+        return cleaned
+    }
+    
+}
+
+

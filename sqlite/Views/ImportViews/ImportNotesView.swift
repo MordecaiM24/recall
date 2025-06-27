@@ -1,5 +1,5 @@
 //
-//  ImportEmailsView.swift
+//  ImportNotesView.swift
 //  sqlite
 //
 //  Created by Mordecai Mengesteab on 6/17/25.
@@ -7,21 +7,19 @@
 
 import SwiftUI
 
-struct EmailImportData: Codable {
-    let id: String
-    let thread_id: String
-    let subject: String
-    let sender: String
-    let recipient: String
-    let date: String
+struct NoteImportData: Codable {
+    let id: Int
+    let title: String
+    let snippet: String?
     let content: String
-    let labels: [String]
-    let snippet: String
-    let readable_date: String
-    let timestamp: Int64
+    let folder: String
+    let created: String?
+    let modified: String
+    let creation_timestamp: Double?
+    let modification_timestamp: Double
 }
 
-struct ImportEmailsView: View {
+struct ImportNotesView: View {
     @EnvironmentObject var contentService: ContentService
     @State private var isImporting = false
     @State private var importedCount = 0
@@ -34,16 +32,16 @@ struct ImportEmailsView: View {
             Spacer()
             
             VStack(spacing: 20) {
-                Image(systemName: "envelope.circle")
+                Image(systemName: "note.text")
                     .font(.system(size: 80))
                     .foregroundColor(.blue)
                 
                 VStack(spacing: 8) {
-                    Text("import emails")
+                    Text("import notes")
                         .font(.title2)
                         .fontWeight(.semibold)
                     
-                    Text("select a JSON file containing your exported emails")
+                    Text("select a JSON file containing your exported notes")
                         .font(.body)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -56,13 +54,12 @@ struct ImportEmailsView: View {
                     
                     Text("""
                     [{
-                      "id": "abc123",
-                      "subject": "Hello",
-                      "sender": "sender@example.com",
-                      "recipient": "you@example.com",
-                      "content": "Email content...",
-                      "labels": ["INBOX"],
-                      "readable_date": "2024-01-01T12:00:00Z"
+                      "id": 123,
+                      "title": "My Note",
+                      "content": "Note content...",
+                      "folder": "Notes",
+                      "modified": "2024-01-01 12:00:00",
+                      "modification_timestamp": 123456789
                     }]
                     """)
                     .font(.caption)
@@ -79,7 +76,7 @@ struct ImportEmailsView: View {
                         ProgressView()
                             .scaleEffect(0.8)
                     }
-                    Text(isImporting ? "importing..." : "select emails file")
+                    Text(isImporting ? "importing..." : "select notes file")
                         .fontWeight(.semibold)
                 }
                 .foregroundColor(.white)
@@ -103,7 +100,7 @@ struct ImportEmailsView: View {
         .alert("import successful!", isPresented: $showingSuccess) {
             Button("ok") { }
         } message: {
-            Text("imported \(importedCount) emails successfully")
+            Text("imported \(importedCount) notes successfully")
         }
         .alert("import failed", isPresented: .constant(importError != nil)) {
             Button("ok") { importError = nil }
@@ -118,14 +115,14 @@ struct ImportEmailsView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            importEmails(from: url)
+            importNotes(from: url)
             
         case .failure(let error):
             importError = "failed to select file: \(error.localizedDescription)"
         }
     }
     
-    private func importEmails(from url: URL) {
+    private func importNotes(from url: URL) {
         isImporting = true
         importedCount = 0
         
@@ -137,62 +134,43 @@ struct ImportEmailsView: View {
                 defer { url.stopAccessingSecurityScopedResource() }
                 
                 let data = try Data(contentsOf: url)
-                let emailData = try JSONDecoder().decode([EmailImportData].self, from: data)
+                let noteData = try JSONDecoder().decode([NoteImportData].self, from: data)
                 
-                var successCount = 0
-                var errorCount = 0
-                
-                for emailInfo in emailData {
-                    do {
-                        let email = Email(
-                            id: UUID().uuidString,
-                            originalId: emailInfo.id,
-                            threadId: emailInfo.thread_id,
-                            subject: emailInfo.subject,
-                            sender: emailInfo.sender,
-                            recipient: emailInfo.recipient,
-                            date: parseEmailDate(emailInfo.readable_date) ?? Date(),
-                            content: emailInfo.content,
-                            labels: emailInfo.labels,
-                            snippet: emailInfo.snippet,
-                            timestamp: emailInfo.timestamp
-                        )
-                        
-                        // attempt to add email - this includes both db insert and embedding
-                        _ = try await contentService.addEmail(email)
-                        successCount += 1
-                        
-                    } catch {
-                        print("failed to import email \(emailInfo.id): \(error)")
-                        errorCount += 1
-                        // continue with next email instead of stopping
-                    }
+                let notes = noteData.map { noteInfo in
+                    Note(
+                        id: UUID().uuidString,
+                        originalId: Int32(noteInfo.id),
+                        title: noteInfo.title,
+                        snippet: noteInfo.snippet,
+                        content: noteInfo.content,
+                        folder: noteInfo.folder,
+                        created: noteInfo.created.flatMap { parseNoteDate($0) },
+                        modified: parseNoteDate(noteInfo.modified) ?? Date(),
+                        creationTimestamp: noteInfo.creation_timestamp,
+                        modificationTimestamp: noteInfo.modification_timestamp
+                    )
                 }
                 
+                let importedIds = try await contentService.importNotes(notes)
+                
                 await MainActor.run {
-                    importedCount = successCount
+                    importedCount = importedIds.count
                     isImporting = false
-                    if successCount > 0 {
-                        showingSuccess = true
-                        if errorCount > 0 {
-                            print("import completed with \(successCount) successes and \(errorCount) errors")
-                        }
-                    } else {
-                        importError = "no emails were imported successfully (\(errorCount) failed)"
-                    }
+                    showingSuccess = true
                 }
                 
             } catch {
                 await MainActor.run {
                     isImporting = false
-                    importError = "failed to import emails: \(error.localizedDescription)"
+                    importError = "failed to import notes: \(error.localizedDescription)"
                 }
             }
         }
     }
     
-    private func parseEmailDate(_ dateString: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
+    private func parseNoteDate(_ dateString: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.date(from: dateString)
     }
 }

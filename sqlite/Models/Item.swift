@@ -1,8 +1,8 @@
 //
-//  Content.swift
+//  Item.swift
 //  sqlite
 //
-//  Created by Mordecai Mengesteab on 6/17/25.
+//  Created by Mordecai Mengesteab on 6/24/25.
 //
 
 import Foundation
@@ -39,41 +39,41 @@ enum ContentType: String, CaseIterable {
         case .note: return "Note"
         }
     }
+    
 }
 
-/// unified content wrapper for search results
-struct UnifiedContent: Identifiable {
+
+struct Item: Identifiable {
     let id: String
     let type: ContentType
     let title: String
     let content: String
+    let embeddableText: String
     let snippet: String
+    // this is glue - change this if possible. threadId is going to be reassigned before we insert in the content service
+    // but original thread id's based on the imported data type should be separate from the db generated uuid we create.
+    // tbh this could also work as an indicator of whether a thread has been fully imported but that's for >v0.5
+    var threadId: String
     let date: Date
-    let distance: Double
+    
+
     let metadata: [String: Any]
     
-    init(id: String, type: ContentType, title: String, content: String,
-         snippet: String, date: Date, distance: Double, metadata: [String: Any] = [:]) {
+    init(id: String, type: ContentType, title: String, content: String, embeddableText: String,
+         snippet: String, date: Date, threadId: String, metadata: [String: Any] = [:]) {
         self.id = id
         self.type = type
         self.title = title
         self.content = content
+        self.embeddableText = embeddableText
         self.snippet = snippet
         self.date = date
-        self.distance = distance
+        self.threadId = threadId
         self.metadata = metadata
     }
 }
 
-extension UnifiedContent {
-    var similarity: Double {
-        return max(0, 1.0 / (1.0 + distance))
-    }
-    
-    var similarityPercentage: String {
-        return String(format: "%.1f%%", similarity * 100)
-    }
-    
+extension Item {
     var displayTitle: String {
         if title.isEmpty {
             return "\(type.displayName) • \(formattedDate)"
@@ -87,73 +87,74 @@ extension UnifiedContent {
         formatter.timeStyle = .short
         return formatter.string(from: date)
     }
-    
-    var typeIcon: String {
-        return type.icon
-    }
 }
 
-// MARK: - Convenience Initializers
-
-extension UnifiedContent {
-    init(from document: Document, distance: Double) {
+extension Item {
+    init(from document: Document) {
         self.init(
             id: document.id,
             type: .document,
             title: document.title,
             content: document.content,
+            embeddableText: document.content,
             snippet: document.preview,
             date: document.createdAt,
-            distance: distance
+            threadId: document.id
         )
     }
     
-    init(from message: Message, distance: Double) {
+    init(from message: Message) {
         self.init(
             id: message.id,
             type: .message,
             title: message.displayName,
             content: message.text,
+            embeddableText: message.embeddableText,
             snippet: message.preview,
             date: message.date,
-            distance: distance,
+            threadId: message.contact,
             metadata: [
+                // this should be it's own field but then i'd have to adjust sqlite and i don't feel like it
+                "originalId": message.originalId,
                 "isFromMe": message.isFromMe,
                 "service": message.service,
-                "contact": message.contact ?? "",
-                "chatId": message.chatId
+                "contact": message.contact,
+                "chatId": message.chatId ?? ""
             ]
         )
     }
     
-    init(from email: Email, distance: Double) {
+    init(from email: Email) {
         self.init(
             id: email.id,
             type: .email,
             title: email.subject,
             content: email.content,
+            embeddableText: email.embeddableText,
             snippet: email.preview,
             date: email.date,
-            distance: distance,
+            threadId: email.threadId,
             metadata: [
+                "originalId": email.originalId,
                 "sender": email.sender,
                 "recipient": email.recipient,
-                "threadId": email.threadId,
                 "labels": email.labels
             ]
         )
     }
     
-    init(from note: Note, distance: Double) {
+    init(from note: Note) {
         self.init(
             id: note.id,
             type: .note,
             title: note.displayTitle,
             content: note.content,
+            embeddableText: note.embeddableText,
             snippet: note.preview,
             date: note.modified,
-            distance: distance,
+            threadId: note.id,
             metadata: [
+                "originalId": note.originalId,
                 "folder": note.folder,
                 "created": note.created?.timeIntervalSince1970 ?? 0
             ]

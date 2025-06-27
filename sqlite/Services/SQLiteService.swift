@@ -16,17 +16,7 @@ enum SQLiteError: Error {
     case initExtension(message: String)
 }
 
-// unified search result
-struct UnifiedSearchResult {
-    let type: ContentType
-    let id: String // now UUID
-    let title: String
-    let content: String
-    let snippet: String
-    let date: Date
-    let distance: Double
-    let metadata: [String: Any]
-}
+// not very DRY. could probably implement generics. maybe slightly better for performance this way (prep and all)? whatever.
 
 final class SQLiteService {
     private let dbPointer: OpaquePointer?
@@ -42,10 +32,15 @@ final class SQLiteService {
             try? FileManager.default.removeItem(atPath: path)
             defaults.set(schemaVersion, forKey: databaseVersionKey)
         }
-
+        
         var db: OpaquePointer?
         if sqlite3_open(path, &db) == SQLITE_OK {
             self.dbPointer = db
+            
+            if sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil) != SQLITE_OK {
+                let msg = String(cString: sqlite3_errmsg(db))
+                throw SQLiteError.openDatabase(message: "Failed to set WAL mode: \(msg)")
+            }
             
             // load sqlite-vec extension
             if sqlite3_vec_init(db, nil, nil) != SQLITE_OK {
@@ -58,630 +53,1098 @@ final class SQLiteService {
             throw SQLiteError.openDatabase(message: msg)
         }
     }
-
+    
     deinit {
         sqlite3_close(dbPointer)
     }
-
-    private var errorMessage: String {
-        if let ptr = sqlite3_errmsg(dbPointer) {
-            return String(cString: ptr)
-        }
-        return "no error"
-    }
-
-    private func prepare(_ sql: String) throws -> OpaquePointer? {
-        var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
-            throw SQLiteError.prepare(message: errorMessage)
-        }
-        return stmt
-    }
-
-    func execute(_ sql: String) throws {
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-    }
+    
+    
     
     // MARK: - Database Setup
     
     func setupDatabase() throws {
-        // documents table with UUID
         let documentsSQL = """
         CREATE TABLE IF NOT EXISTS Document(
-            Id TEXT PRIMARY KEY,
-            Title TEXT NOT NULL,
-            Content TEXT NOT NULL,
-            CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         """
         try execute(documentsSQL)
+        print("documents table ready")
         
-        // messages table with UUID
-        let messagesSQL = """
-        CREATE TABLE IF NOT EXISTS Message(
-            Id TEXT PRIMARY KEY,
-            OriginalId INTEGER NOT NULL,
-            Text TEXT NOT NULL,
-            Date DATETIME NOT NULL,
-            Timestamp INTEGER NOT NULL,
-            IsFromMe BOOLEAN NOT NULL,
-            IsSent BOOLEAN NOT NULL,
-            Service TEXT NOT NULL,
-            Contact TEXT,
-            ChatName TEXT,
-            ChatId TEXT NOT NULL,
-            CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(OriginalId, ChatId)
-        );
-        """
-        try execute(messagesSQL)
-        print("✓ messages table ready")
+        try execute("CREATE INDEX IF NOT EXISTS idx_document_id ON Document(id);")
+        print("document index ready")
         
-        // emails table with UUID
         let emailsSQL = """
         CREATE TABLE IF NOT EXISTS Email(
-            Id TEXT PRIMARY KEY,
-            OriginalId TEXT NOT NULL UNIQUE,
-            ThreadId TEXT NOT NULL,
-            Subject TEXT NOT NULL,
-            Sender TEXT NOT NULL,
-            Recipient TEXT NOT NULL,
-            Date DATETIME NOT NULL,
-            Content TEXT NOT NULL,
-            Labels TEXT,
-            Snippet TEXT,
-            Timestamp INTEGER NOT NULL,
-            CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            id TEXT PRIMARY KEY,
+            original_id TEXT NOT NULL UNIQUE,
+            thread_id TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            date DATETIME NOT NULL,
+            content TEXT NOT NULL,
+            labels TEXT,
+            snippet TEXT,
+            timestamp INTEGER NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         """
         try execute(emailsSQL)
-        print("✓ emails table ready")
+        print("emails table ready")
         
-        // notes table with UUID
-        let notesSQL = """
-        CREATE TABLE IF NOT EXISTS Note(
-            Id TEXT PRIMARY KEY,
-            OriginalId INTEGER NOT NULL UNIQUE,
-            Title TEXT NOT NULL,
-            Snippet TEXT,
-            Content TEXT NOT NULL,
-            Folder TEXT NOT NULL,
-            Created DATETIME,
-            Modified DATETIME NOT NULL,
-            CreationTimestamp REAL,
-            ModificationTimestamp REAL NOT NULL,
-            CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        try execute("CREATE INDEX IF NOT EXISTS idx_email_id ON Email(id);")
+        try execute("CREATE INDEX IF NOT EXISTS idx_email_thread_id ON Email(thread_id);")
+        print("created email indexes")
+        
+        
+        let messagesSQL = """
+        CREATE TABLE IF NOT EXISTS Message(
+            id TEXT PRIMARY KEY,
+            original_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            date DATETIME NOT NULL,
+            timestamp INTEGER NOT NULL,
+            is_from_me BOOLEAN NOT NULL,
+            is_sent BOOLEAN NOT NULL,
+            service TEXT NOT NULL,
+            contact TEXT NOT NULL,
+            chat_name TEXT,
+            chat_id TEXT,
+            contact_number TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(original_id)
         );
         """
-        try execute(notesSQL)
-        print("✓ notes table ready")
+        try execute(messagesSQL)
+        print("messages table ready")
         
-        // single chunk virtual table for all content
-        let chunkSQL = """
+        try execute("CREATE INDEX IF NOT EXISTS idx_message_id on Email(id);")
+        try execute("CREATE INDEX IF NOT EXISTS idx_contact ON Message(contact);")
+        print("created message indexes")
+        
+        let notesSQL = """
+        CREATE TABLE IF NOT EXISTS Note(
+            id TEXT PRIMARY KEY,
+            original_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            snippet TEXT,
+            content TEXT NOT NULL,
+            folder TEXT NOT NULL,
+            created DATE,
+            modified DATETIME NOT NULL,
+            creation_timestamp REAL,
+            modification_timestamp REAL NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );        
+        """
+        try execute(notesSQL)
+        print("notes table ready")
+        
+        try execute("CREATE INDEX IF NOT EXISTS idx_note_id ON Note(id);")
+        print("created notes indexes")
+        
+        let itemsSQL = """
+        CREATE TABLE IF NOT EXISTS Item(
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL CHECK(type IN ('document', 'email', 'message', 'note')),
+            thread_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            snippet TEXT NOT NULL,
+            date DATETIME NOT NULL,
+            metadata TEXT, 
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        try execute(itemsSQL)
+        print("items table ready")
+        
+        try execute("CREATE INDEX IF NOT EXISTS idx_item_id ON Item(id);")
+        try execute("CREATE INDEX IF NOT EXISTS idx_item_type ON Item(type);")
+        try execute("CREATE INDEX IF NOT EXISTS idx_item_thread_id ON Item(thread_id);")
+        print("created items indexes")
+        
+        let threadsSQL = """
+        CREATE TABLE IF NOT EXISTS Thread(
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL CHECK(type IN ('document', 'email', 'message', 'note')),
+            thread_id TEXT NOT NULL,
+            item_ids TEXT NOT NULL,
+            snippet TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        try execute(threadsSQL)
+        print("threads table ready")
+        
+        try execute("CREATE INDEX IF NOT EXISTS idx_thread_id ON Thread(id);")
+        try execute("CREATE INDEX IF NOT EXISTS idx_thread_type ON Thread(type);")
+        print("created threads indexes")
+        
+        let threadChunksSQL = """
         CREATE VIRTUAL TABLE IF NOT EXISTS Chunk USING vec0(
-            parent_id TEXT,
-            content_type TEXT,
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            parent_ids TEXT NOT NULL,
+            type TEXT NOT NULL CHECK(content_type IN ('document', 'email', 'message', 'note')),
             chunk_index INTEGER,
-            +chunk_text TEXT,
+            startPosition INTEGER,
+            endPosition INTEGER,
+            +content TEXT,
             embedding float[\(embeddingDimensions)]
         );
         """
-        try execute(chunkSQL)
-        print("✓ chunk table ready")
-        
-        print("database setup complete ✨")
+        try execute(threadChunksSQL)
+        print("thread chunks table ready")
     }
     
-    // MARK: - UUID Generation
+    // would rather not deal with race conditions later
+    // only necessary on writes (wal covers reads)
+    private let dbQueue = DispatchQueue(label: "sqlite.serial.db")
     
-    private func generateUUID() -> String {
-        return UUID().uuidString
+    func sync<T>(_ block: () throws -> T) rethrows -> T {
+        try dbQueue.sync {
+            try block()
+        }
     }
     
-    // MARK: - Unified Search
+    // MARK: - Search
     
-    func searchAllContent(queryEmbedding: [Float], limit: Int = 20, contentTypes: [ContentType] = ContentType.allCases) throws -> [UnifiedSearchResult] {
+    func searchThreadChunks(
+        queryEmbedding: [Float],
+        limit: Int = 20,
+        types: [ContentType]? = ContentType.allCases
+    ) throws -> [SearchResult] {
+        let contentTypes = types ?? ContentType.allCases
+        // Build the “IN (?,?,…)” part dynamically
         let placeholders = contentTypes.map { _ in "?" }.joined(separator: ",")
-        let vectorSQL = """
-        SELECT parent_id, content_type, distance 
-        FROM Chunk 
-        WHERE content_type IN (\(placeholders)) 
-        AND chunk_index = 0
-        AND embedding MATCH vec_f32(?) 
-        ORDER BY distance 
-        LIMIT ?;
-        """
+        let sql = """
+            SELECT id, thread_id, distance
+            FROM Chunk
+            WHERE type IN (\(placeholders))
+              AND chunk_index = 0
+              AND embedding MATCH vec_f32(?)
+            ORDER BY distance
+            LIMIT ?;
+            """
         
-        let stmt = try prepare(vectorSQL)
+        let stmt = try prepare(sql)
         defer { sqlite3_finalize(stmt) }
         
-        // bind content types
-        for (index, contentType) in contentTypes.enumerated() {
-            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            guard sqlite3_bind_text(stmt, Int32(index + 1), contentType.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        
+        for (i, ct) in contentTypes.enumerated() {
+            guard sqlite3_bind_text(stmt, Int32(i + 1), ct.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
         }
         
-        // bind embedding and limit
-        let vectorBlob = embeddingToBlob(queryEmbedding)
-        guard sqlite3_bind_blob(stmt, Int32(contentTypes.count + 1), vectorBlob, Int32(vectorBlob.count), nil) == SQLITE_OK,
-              sqlite3_bind_int(stmt, Int32(contentTypes.count + 2), Int32(limit)) == SQLITE_OK else {
+        let blob = embeddingToBlob(queryEmbedding)
+        let blobIndex = contentTypes.count + 1
+        guard sqlite3_bind_blob(stmt, Int32(blobIndex), blob, Int32(blob.count), nil) == SQLITE_OK else {
             throw SQLiteError.bind(message: errorMessage)
         }
         
-        var results = [UnifiedSearchResult]()
+        let limitIndex = contentTypes.count + 2
+        guard sqlite3_bind_int(stmt, Int32(limitIndex), Int32(limit)) == SQLITE_OK else {
+            throw SQLiteError.bind(message: errorMessage)
+        }
+        
+        var results = [SearchResult]()
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let parentId = String(cString: sqlite3_column_text(stmt, 0))
-            let contentType = String(cString: sqlite3_column_text(stmt, 1))
-            let distance = sqlite3_column_double(stmt, 2)
+            let chunkId   = String(cString: sqlite3_column_text(stmt, 0))
+            let threadId  = String(cString: sqlite3_column_text(stmt, 1))
+            let distance  = sqlite3_column_double(stmt, 2)
             
-            if let type = ContentType(rawValue: contentType),
-               let result = try fetchUnifiedResult(type: type, id: parentId, distance: distance) {
-                results.append(result)
-            }
+            let chunks = try getAllChunksByThreadId(threadId)
+            guard let threadChunk = chunks.first(where: { $0.id == chunkId }) else { continue }
+            
+            guard let thread = try findThread(id: threadId) else { continue }
+            let items = try getItemsByThreadId(threadId)
+            
+            results.append(
+                SearchResult(
+                    threadChunk: threadChunk,
+                    thread: thread,
+                    items: items,
+                    distance: distance
+                )
+            )
         }
         
         return results
+        
     }
     
-    private func fetchUnifiedResult(type: ContentType, id: String, distance: Double) throws -> UnifiedSearchResult? {
-        switch type {
-        case .document:
-            guard let doc = try findDocument(id: id) else {
-                print("failed to find document with id: \(id)")
-                return nil
+    // MARK: - "Optimized" Batch Insertions:
+    // (optimal bc single preparation vs per row statement prep)
+    
+    func insertItems(_ items: [Item]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Item (id, type, thread_id, title, content, snippet, date, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
             }
-            return UnifiedSearchResult(
-                type: .document,
-                id: id,
-                title: doc.title,
-                content: doc.content,
-                snippet: String(doc.content.prefix(200)),
-                date: doc.createdAt,
-                distance: distance,
-                metadata: [:]
-            )
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for item in items {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                let metadataData = try JSONSerialization.data(withJSONObject: item.metadata)
+                let metadataString = String(data: metadataData, encoding: .utf8) ?? "{}"
+                let dateString = ISO8601DateFormatter().string(from: item.date)
+                guard
+                    sqlite3_bind_text(stmt, 1, item.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, item.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, item.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, item.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, item.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 6, item.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 7, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, metadataString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 9, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(item.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    
+    func insertDocuments(_ documents: [Document]) throws -> [String] {
+        return try sync {
+            let sql = "INSERT INTO Document (id, title, content, created_at) VALUES (?, ?, ?, ?);"
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for doc in documents {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard
+                    sqlite3_bind_text(stmt, 1, doc.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, doc.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, doc.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: doc.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(doc.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    
+    func insertEmails(_ emails: [Email]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Email (id, original_id, thread_id, subject, sender, recipient, date, content, labels, snippet, timestamp, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for email in emails {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                let labelsJSON = try JSONSerialization.data(withJSONObject: email.labels)
+                let labelsString = String(data: labelsJSON, encoding: .utf8) ?? "[]"
+                guard
+                    sqlite3_bind_text(stmt, 1, email.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: email.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 12, ISO8601DateFormatter().string(from: email.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(email.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    func insertNotes(_ notes: [Note]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Note (id, original_id, title, snippet, content, folder, created, modified, creation_timestamp, modification_timestamp, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for note in notes {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard
+                    sqlite3_bind_text(stmt, 1, note.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 2, note.originalId) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, note.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, note.snippet ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, note.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 6, note.folder, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 7, note.created.map { ISO8601DateFormatter().string(from: $0) } ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, ISO8601DateFormatter().string(from: note.modified), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_double(stmt, 9, note.creationTimestamp ?? 0) == SQLITE_OK,
+                    sqlite3_bind_double(stmt, 10, note.modificationTimestamp) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 11, ISO8601DateFormatter().string(from: note.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(note.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    func insertMessages(_ messages: [Message]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Message (id, original_id, text, date, timestamp, is_from_me, is_sent, service, contact, chat_name, chat_id, contact_number, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for message in messages {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                guard
+                    sqlite3_bind_text(stmt, 1, message.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 2, message.originalId) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, message.text, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: message.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int64(stmt, 5, message.timestamp) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 6, message.isFromMe ? 1 : 0) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 7, message.isSent ? 1 : 0) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 8, message.service, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 9, message.contact, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 10, message.chatName ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 11, message.chatId ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 12, message.contactNumber ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 13, ISO8601DateFormatter().string(from: message.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(message.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    func insertThreadChunks(_ threadChunks: [ThreadChunk]) throws -> [String] {
+        return try sync {
+            let sql = """
+                INSERT INTO Chunk (id, thread_id, parent_ids, type, content, chunk_index, startPosition, endPosition, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, vec_f32(?));
+            """
+            var stmt: OpaquePointer?
+            var insertedIds = [String]()
+            try beginTransaction()
+            defer {
+                sqlite3_finalize(stmt)
+            }
+            guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw SQLiteError.prepare(message: errorMessage)
+            }
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for chunk in threadChunks {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                let parentIdsJSON = try JSONSerialization.data(withJSONObject: chunk.parentIds)
+                let parentIdsString = String(data: parentIdsJSON, encoding: .utf8) ?? "[]"
+                let vectorBlob = embeddingToBlob(chunk.embedding)
+                guard
+                    sqlite3_bind_text(stmt, 1, chunk.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 2, chunk.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 3, parentIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 4, chunk.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_text(stmt, 5, chunk.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 6, Int32(chunk.chunkIndex)) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 7, Int32(chunk.startPosition)) == SQLITE_OK,
+                    sqlite3_bind_int(stmt, 8, Int32(chunk.endPosition)) == SQLITE_OK,
+                    sqlite3_bind_blob(stmt, 9, vectorBlob, Int32(vectorBlob.count), nil) == SQLITE_OK
+                else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                    throw SQLiteError.step(message: errorMessage)
+                }
+                insertedIds.append(chunk.id)
+            }
+            try commitTransaction()
+            return insertedIds
+        }
+    }
+    
+    
+    // MARK: - Batch Query
+    func getAllDocuments(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Document] {
+        return try sync {
+            var sql = "SELECT * FROM Document"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
             
-        case .message:
-            guard let msg = try findMessage(id: id) else {
-                print("failed to find message with id: \(id)")
-                return nil
+            var results = [Document]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(extractDocument(from: stmt))
             }
-            let messageDate = parseMessageDate(msg.date) ?? Date(timeIntervalSince1970: Double(msg.timestamp) / 1_000_000_000)
-            return UnifiedSearchResult(
-                type: .message,
-                id: id,
-                title: msg.chatName.isEmpty ? msg.chatId : msg.chatName,
-                content: msg.text,
-                snippet: msg.text,
-                date: messageDate,
-                distance: distance,
-                metadata: [
-                    "isFromMe": msg.isFromMe,
-                    "service": msg.service,
-                    "contact": msg.contact ?? "",
-                    "chatId": msg.chatId
-                ]
-            )
+            return results
+        }
+    }
+    
+    func getAllEmails(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Email] {
+        return try sync {
+            var sql = "SELECT * FROM Email"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
             
-        case .email:
-            guard let email = try findEmail(id: id) else {
-                print("failed to find email with id: \(id)")
-                return nil
+            var results = [Email]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractEmail(from: stmt))
             }
-            let emailDate = parseEmailDate(email.readableDate) ?? Date(timeIntervalSince1970: Double(email.timestamp))
-            return UnifiedSearchResult(
-                type: .email,
-                id: id,
-                title: email.subject,
-                content: email.content,
-                snippet: email.snippet,
-                date: emailDate,
-                distance: distance,
-                metadata: [
-                    "sender": email.sender,
-                    "recipient": email.recipient,
-                    "threadId": email.threadId,
-                    "labels": email.labels
-                ]
-            )
+            return results
+        }
+    }
+    
+    func getAllMessages(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Message] {
+        return try sync {
+            var sql = "SELECT * FROM Message"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
             
-        case .note:
-            guard let note = try findNote(id: id) else {
-                print("failed to find note with id: \(id)")
-                return nil
+            var results = [Message]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(extractMessage(from: stmt))
             }
-            let noteDate = parseNoteDate(note.modified) ?? Date(timeIntervalSinceReferenceDate: note.modificationTimestamp)
-            return UnifiedSearchResult(
-                type: .note,
-                id: id,
-                title: note.title,
-                content: note.content,
-                snippet: note.snippet ?? String(note.content.prefix(200)),
-                date: noteDate,
-                distance: distance,
-                metadata: [
-                    "folder": note.folder,
-                    "created": note.created != nil ? parseNoteDate(note.created!)?.timeIntervalSince1970 ?? 0 : 0
-                ]
-            )
+            return results
         }
     }
     
-    // MARK: - Date Parsing Helpers
-    
-    private func parseMessageDate(_ dateString: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.date(from: dateString)
-    }
-    
-    private func parseEmailDate(_ dateString: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        return formatter.date(from: dateString)
-    }
-    
-    private func parseNoteDate(_ dateString: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.date(from: dateString)
-    }
-    
-    // MARK: - Message Operations
-    
-    func findAllMessages() throws -> [Message] {
-        let sql = "SELECT * FROM Message ORDER BY Date DESC"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var messages: [Message] = []
-        
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let messageData = extractMessage(from: stmt)
-            messages.append(Message(from: messageData))
+    func getAllNotes(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Note] {
+        return try sync {
+            var sql = "SELECT * FROM Note"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Note]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(extractNote(from: stmt))
+            }
+            return results
         }
-        
-        return messages
     }
     
-    func insertMessage(_ message: MessageData) throws -> String {
-        let messageId = generateUUID()
-        
-        let sql = """
-        INSERT OR REPLACE INTO Message 
-        (Id, OriginalId, Text, Date, Timestamp, IsFromMe, IsSent, Service, Contact, ChatName, ChatId)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        guard sqlite3_bind_text(stmt, 1, messageId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 2, message.originalId) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, message.text, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, message.date, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int64(stmt, 5, message.timestamp) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 6, message.isFromMe ? 1 : 0) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 7, message.isSent ? 1 : 0) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 8, message.service, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 9, message.contact, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 10, message.chatName, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 11, message.chatId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+    func getAllThreads(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Thread] {
+        return try sync {
+            var sql = "SELECT * FROM Thread"
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Thread]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractThread(from: stmt))
+            }
+            return results
         }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        print("inserted message with id: \(messageId) (original: \(message.originalId))")
-        return messageId
     }
     
-    func findMessage(id: String) throws -> MessageData? {
-        let sql = "SELECT * FROM Message WHERE Id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+    func getAllItems(limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Item] {
+        return try sync {
+            var sql = "SELECT * FROM Item "
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [Item]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractItem(from: stmt))
+            }
+            return results
         }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return extractMessage(from: stmt)
-        }
-        return nil
     }
     
-    func deleteMessage(id: String) throws {
-        try execute("BEGIN TRANSACTION;")
-        defer { try? execute("COMMIT;") }
-        do {
-            let stmt = try prepare("DELETE FROM Message WHERE Id = ?;")
+    func getAllChunksByThreadId(_ threadId: String) throws -> [ThreadChunk] {
+        return try sync {
+            let sql = "SELECT * FROM Chunk WHERE thread_id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            if sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) != SQLITE_OK {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            var results = [] as [ThreadChunk]
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractThreadChunk(from: stmt))
+            }
+            
+            return results
+        }
+    }
+    
+    func getAllChunks() throws -> [ThreadChunk] {
+        return try sync {
+            let sql = "SELECT * FROM Chunk;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            var results = [] as [ThreadChunk]
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractThreadChunk(from: stmt))
+            }
+            
+            return results
+        }
+    }
+    
+    // MARK: - Query by ID
+    func getItemsByThreadId(_ threadId: String, type: String? = nil, limit: Int? = nil, offset: Int? = nil, orderBy: String? = nil) throws -> [Item] {
+        return try sync {
+            print("preparing SQL with threadId: \(threadId)")
+            var sql = "SELECT * FROM Item WHERE thread_id = ?"
+            if let type = type {
+                sql += " AND type = '\(type)'"
+            }
+            if let orderBy = orderBy {
+                sql += " ORDER BY \(orderBy)"
+            }
+            if let limit = limit {
+                sql += " LIMIT \(limit)"
+                if let offset = offset {
+                    sql += " OFFSET \(offset)"
+                }
+            }
+            sql += ";"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            var results = [Item]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractItem(from: stmt))
+            }
+            
+            print("got \(results.count) items with threadId: \(threadId)")
+            return results
+        }
+    }
+    
+    
+    func findItem(id: String) throws -> Item? {
+        return try sync {
+            let sql = "SELECT * FROM Item WHERE id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractItem(from: stmt)
+            }
+            return nil
+        }
+    }
+    
+    func findItems(ids: [String]) throws -> [Item] {
+        return try sync {
+            guard !ids.isEmpty else { return [] }
+            let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+            let sql = "SELECT * FROM Item WHERE id IN (\(placeholders));"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            for (index, id) in ids.enumerated() {
+                guard sqlite3_bind_text(stmt, Int32(index + 1), id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                    throw SQLiteError.bind(message: errorMessage)
+                }
+            }
+            
+            var results = [Item]()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                results.append(try extractItem(from: stmt))
+            }
+            return results
+        }
+    }
+    
+    func findNote(id: String) throws -> Note? {
+        return try sync {
+            let sql = "SELECT * FROM Note WHERE Id = ?;"
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return extractNote(from: stmt)
+            }
+            
+            return nil
+        }
+    }
+    
+    func findDocument(id: String) throws -> Document? {
+        return try sync {
+            let sql = "SELECT * FROM Document WHERE id = ?;"
+            let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
             let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
-            guard sqlite3_step(stmt) == SQLITE_DONE else {
-                throw SQLiteError.step(message: errorMessage)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return extractDocument(from: stmt)
             }
+            return nil
         }
-
-        do {
-            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
+    }
+    
+    func findEmail(id: String) throws -> Email? {
+        return try sync {
+            let sql = "SELECT * FROM Email WHERE id = ?;"
+            let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
             let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
-            guard sqlite3_step(stmt) == SQLITE_DONE else {
-                throw SQLiteError.step(message: errorMessage)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractEmail(from: stmt)
             }
+            return nil
         }
     }
-
     
-    // MARK: - Email Operations
-    
-    func findAllEmails() throws -> [Email] {
-        let sql = "SELECT * FROM Email ORDER BY Date DESC;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var emails: [Email] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let emailData = extractEmail(from: stmt)
-            emails.append(Email(from: emailData))
-        }
-        return emails
-    }
-    
-    func insertEmail(_ email: EmailData) throws -> String {
-        let emailId = generateUUID()
-        
-        let sql = """
-        INSERT OR REPLACE INTO Email 
-        (Id, OriginalId, ThreadId, Subject, Sender, Recipient, Date, Content, Labels, Snippet, Timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        let labelsJson = try? JSONSerialization.data(withJSONObject: email.labels, options: [])
-        let labelsString = labelsJson.flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        
-        guard sqlite3_bind_text(stmt, 1, emailId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 7, email.readableDate, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        print("inserted email with id: \(emailId) (original: \(email.originalId))")
-        return emailId
-    }
-    
-    func findEmail(id: String) throws -> EmailData? {
-        let sql = "SELECT * FROM Email WHERE Id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return extractEmail(from: stmt)
-        }
-        return nil
-    }
-    
-    func deleteEmail(id: String) throws {
-        try execute("BEGIN TRANSACTION;")
-        defer { try? execute("COMMIT;") }
-        do {
-            let stmt = try prepare("DELETE FROM Email WHERE Id = ?;")
+    func findMessage(id: String) throws -> Message? {
+        return try sync {
+            let sql = "SELECT * FROM Message WHERE id = ?;"
+            let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
             let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
-            guard sqlite3_step(stmt) == SQLITE_DONE else {
-                throw SQLiteError.step(message: errorMessage)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return extractMessage(from: stmt)
             }
+            return nil
         }
-
-        do {
-            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
+    }
+    
+    func findThread(id: String) throws -> Thread? {
+        return try sync {
+            let sql = "SELECT * FROM Thread WHERE id = ?;"
+            let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
             let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
             guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
-            guard sqlite3_step(stmt) == SQLITE_DONE else {
-                throw SQLiteError.step(message: errorMessage)
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractThread(from: stmt)
             }
+            return nil
         }
     }
-
     
-    // MARK: - Note Operations
-    
-    func findAllNotes() throws -> [Note] {
-        let noteSql = "SELECT * FROM Note ORDER BY Modified DESC"
-        let stmt = try prepare(noteSql)
-        defer { sqlite3_finalize(stmt) }
-        
-        var notes: [Note] = []
-        
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let noteData = extractNote(from: stmt)
-            notes.append(Note(from: noteData))
-        }
-        
-        return notes
-    }
-    
-    func insertNote(_ note: NoteData) throws -> String {
-        let noteId = generateUUID()
-        
-        let sql = """
-        INSERT OR REPLACE INTO Note 
-        (Id, OriginalId, Title, Snippet, Content, Folder, Created, Modified, CreationTimestamp, ModificationTimestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-        """
-        
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        
-        guard sqlite3_bind_text(stmt, 1, noteId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 2, note.originalId) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, note.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, note.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 5, note.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 6, note.folder, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        // handle nullable dates
-        if let created = note.created {
-            guard sqlite3_bind_text(stmt, 7, created, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
-            }
-        } else {
-            guard sqlite3_bind_null(stmt, 7) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
-            }
-        }
-        
-        guard sqlite3_bind_text(stmt, 8, note.modified, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        // handle nullable timestamps
-        if let creationTs = note.creationTimestamp {
-            guard sqlite3_bind_double(stmt, 9, creationTs) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
-            }
-        } else {
-            guard sqlite3_bind_null(stmt, 9) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
-            }
-        }
-        
-        guard sqlite3_bind_double(stmt, 10, note.modificationTimestamp) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
-        }
-        
-        print("inserted note with id: \(noteId) (original: \(note.originalId))")
-        return noteId
-    }
-    
-    func findNote(id: String) throws -> NoteData? {
-        let sql = "SELECT * FROM Note WHERE Id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return extractNote(from: stmt)
-        }
-        return nil
-    }
-    
-    func deleteNote(id: String) throws {
-        try execute("BEGIN TRANSACTION;")
-        defer { try? execute("COMMIT;") }
-        do {
-            let stmt = try prepare("DELETE FROM Note WHERE Id = ?;")
+    func findThreadByOriginalId(threadId: String) throws -> Thread? {
+        return try sync {
+            let sql = "SELECT * FROM Thread WHERE thread_id = ?;"
+            let stmt = try prepare(sql)
             defer { sqlite3_finalize(stmt) }
             let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+            guard sqlite3_bind_text(stmt, 1, threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
-            guard sqlite3_step(stmt) == SQLITE_DONE else {
-                throw SQLiteError.step(message: errorMessage)
+            
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return try extractThread(from: stmt)
             }
+            return nil
         }
-
-        do {
-            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
+    }
+    
+    // MARK: - Basic Insertion
+    func insertDocument(_ document: Document) throws -> String {
+        return try sync {
+            let docSQL = "INSERT INTO Document (id, title, content, created_at) VALUES (?, ?, ?, ?);"
+            let stmt = try prepare(docSQL)
             defer { sqlite3_finalize(stmt) }
+            
             let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+            guard sqlite3_bind_text(stmt, 1, document.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, document.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, document.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: document.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
+            
             guard sqlite3_step(stmt) == SQLITE_DONE else {
                 throw SQLiteError.step(message: errorMessage)
             }
+            
+            return document.id
         }
     }
     
-    // MARK: - Chunk Operations
-    
-    func insertChunk(parentId: String, contentType: ContentType, chunkIndex: Int = 0, text: String, embedding: [Float]) throws {
-        let sql = """
-        INSERT INTO Chunk 
-        (parent_id, content_type, chunk_index, chunk_text, embedding)
-        VALUES (?, ?, ?, ?, vec_f32(?));
-        """
-        
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        let vectorBlob = embeddingToBlob(embedding)
-        
-        guard sqlite3_bind_text(stmt, 1, parentId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 2, contentType.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_int(stmt, 3, Int32(chunkIndex)) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 4, text, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_blob(stmt, 5, vectorBlob, Int32(vectorBlob.count), nil) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        guard sqlite3_step(stmt) == SQLITE_DONE else {
-            throw SQLiteError.step(message: errorMessage)
+    func insertEmail(_ email: Email) throws -> String {
+        return try sync {
+            let sql = """
+            INSERT INTO Email (id, original_id, thread_id, subject, sender, recipient, date, content, labels, snippet, timestamp, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            let labelsJSON = try JSONSerialization.data(withJSONObject: email.labels)
+            let labelsString = String(data: labelsJSON, encoding: .utf8) ?? "[]"
+            
+            guard sqlite3_bind_text(stmt, 1, email.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: email.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 12, ISO8601DateFormatter().string(from: email.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return email.id
         }
     }
     
+    func insertMessage(_ message: Message) throws -> String {
+        return try sync {
+            let sql = """
+            INSERT INTO Message (id, original_id, text, date, timestamp, is_from_me, is_sent, service, contact, chat_name, chat_id, contact_number, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            guard sqlite3_bind_text(stmt, 1, message.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 2, message.originalId) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, message.text, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, ISO8601DateFormatter().string(from: message.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int64(stmt, 5, message.timestamp) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 6, message.isFromMe ? 1 : 0) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 7, message.isSent ? 1 : 0) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 8, message.service, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 9, message.contact, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 10, message.chatName ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 11, message.chatId ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 12, message.contactNumber ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 13, ISO8601DateFormatter().string(from: message.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return message.id
+        }
+    }
+    
+    func insertNote(_ note: Note) throws -> String {
+        return try sync {
+            let sql = """
+            INSERT INTO Note (id, original_id, title, snippet, content, folder, created, modified, creation_timestamp, modification_timestamp, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            guard sqlite3_bind_text(stmt, 1, note.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 2, note.originalId) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, note.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, note.snippet ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, note.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 6, note.folder, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 7, note.created.map { ISO8601DateFormatter().string(from: $0) } ?? "", -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 8, ISO8601DateFormatter().string(from: note.modified), -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_double(stmt, 9, note.creationTimestamp ?? 0) == SQLITE_OK,
+                  sqlite3_bind_double(stmt, 10, note.modificationTimestamp) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 11, ISO8601DateFormatter().string(from: note.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return note.id
+        }
+    }
+    
+    func insertThread(_ thread: Thread) throws -> String {
+        return try sync {
+            let sql = """
+            INSERT INTO Thread
+            (id, type, thread_id, item_ids, snippet, content, created)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+            """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            let itemIdsJSON = try JSONSerialization.data(withJSONObject: thread.itemIds)
+            let itemIdsString = String(data: itemIdsJSON, encoding: .utf8) ?? "[]"
+            
+            
+            guard sqlite3_bind_text(stmt, 1, thread.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, thread.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, thread.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, itemIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, thread.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 6, thread.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: thread.created), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return thread.id
+        }
+    }
+    
+    func insertItem(_ item: Item) throws -> String {
+        return try sync {
+            let sql = """
+                INSERT INTO Item (id, type, thread_id, title, content, snippet, date, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            let metadataData = try JSONSerialization.data(withJSONObject: item.metadata)
+            let metadataString = String(data: metadataData, encoding: .utf8) ?? "{}"
+            let dateString = ISO8601DateFormatter().string(from: item.date)
+            
+            guard
+                sqlite3_bind_text(stmt, 1, item.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 2, item.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 3, item.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 4, item.title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 5, item.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 6, item.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 7, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 8, metadataString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                sqlite3_bind_text(stmt, 9, dateString, -1, SQLITE_TRANSIENT) == SQLITE_OK
+            else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return item.id
+        }
+    }
+    
+    func insertThreadChunk(_ threadChunk: ThreadChunk) throws -> String {
+        return try sync {
+            let sql = """
+            INSERT INTO Chunk (id, thread_id, parent_ids, type, content, chunk_index, startPosition, endPosition, embedding) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, vec_f32(?));
+            """
+            
+            let stmt = try prepare(sql)
+            defer { sqlite3_finalize(stmt) }
+            
+            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            
+            let parentIdsJSON = try JSONSerialization.data(withJSONObject: threadChunk.parentIds)
+            let parentIdsString = String(data: parentIdsJSON, encoding: .utf8) ?? "[]"
+            
+            let vectorBlob = embeddingToBlob(threadChunk.embedding)
+            
+            guard sqlite3_bind_text(stmt, 1, threadChunk.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 2, threadChunk.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 3, parentIdsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 4, threadChunk.type.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_text(stmt, 5, threadChunk.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 6, Int32(threadChunk.chunkIndex)) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 7, Int32(threadChunk.startPosition)) == SQLITE_OK,
+                  sqlite3_bind_int(stmt, 8, Int32(threadChunk.endPosition)) == SQLITE_OK,
+                  sqlite3_bind_blob(stmt, 9, vectorBlob, Int32(vectorBlob.count), nil) == SQLITE_OK
+            else {
+                throw SQLiteError.bind(message: errorMessage)
+            }
+            
+            guard sqlite3_step(stmt) == SQLITE_DONE else {
+                throw SQLiteError.step(message: errorMessage)
+            }
+            
+            return threadChunk.id
+        }
+    }
 
     
-    // MARK: - Private Helpers
-    
+    /// convert [Float] to binary blob (4 bytes per float, little endian)
     private func embeddingToBlob(_ embedding: [Float]) -> [UInt8] {
         var blob = [UInt8]()
         blob.reserveCapacity(embedding.count * 4)
@@ -697,62 +1160,23 @@ final class SQLiteService {
         return blob
     }
     
-    private func extractDocument(from stmt: OpaquePointer?) -> Document {
-        let id = String(cString: sqlite3_column_text(stmt, 0))
-        let title = String(cString: sqlite3_column_text(stmt, 1))
-        let content = String(cString: sqlite3_column_text(stmt, 2))
-        
-        let dateString = String(cString: sqlite3_column_text(stmt, 3))
-        let formatter = ISO8601DateFormatter()
-        let date = formatter.date(from: dateString) ?? Date()
-        
-        return Document(id: id, title: title, content: content, createdAt: date)
+    private func blobToEmbedding(_ blob: UnsafeRawPointer?, count: Int) -> [Float] {
+        guard let blob = blob else { return [] }
+        var floats = [Float](repeating: 0, count: count)
+        let pointer = blob.assumingMemoryBound(to: UInt8.self)
+        for i in 0..<count {
+            let base = pointer + (i * 4)
+            let value = base.withMemoryRebound(to: UInt32.self, capacity: 1) { $0.pointee }
+            floats[i] = Float(bitPattern: value)
+        }
+        return floats
     }
     
-    private func extractMessage(from stmt: OpaquePointer?) -> MessageData {
-        let id = String(cString: sqlite3_column_text(stmt, 0))
-        let originalId = sqlite3_column_int(stmt, 1)
-        let text = String(cString: sqlite3_column_text(stmt, 2))
-        let date = String(cString: sqlite3_column_text(stmt, 3))
-        let timestamp = sqlite3_column_int64(stmt, 4)
-        let isFromMe = sqlite3_column_int(stmt, 5) == 1
-        let isSent = sqlite3_column_int(stmt, 6) == 1
-        let service = String(cString: sqlite3_column_text(stmt, 7))
-        let contact = sqlite3_column_text(stmt, 8).map { String(cString: $0) }
-        let chatName = String(cString: sqlite3_column_text(stmt, 9))
-        let chatId = String(cString: sqlite3_column_text(stmt, 10))
-        
-        return MessageData(
-            id: id, originalId: originalId, text: text, date: date, timestamp: timestamp,
-            isFromMe: isFromMe, isSent: isSent, service: service,
-            contact: contact, chatName: chatName, chatId: chatId
-        )
-    }
     
-    private func extractEmail(from stmt: OpaquePointer?) -> EmailData {
-        let id = String(cString: sqlite3_column_text(stmt, 0))
-        let originalId = String(cString: sqlite3_column_text(stmt, 1))
-        let threadId = String(cString: sqlite3_column_text(stmt, 2))
-        let subject = String(cString: sqlite3_column_text(stmt, 3))
-        let sender = String(cString: sqlite3_column_text(stmt, 4))
-        let recipient = String(cString: sqlite3_column_text(stmt, 5))
-        let readableDate = String(cString: sqlite3_column_text(stmt, 6))
-        let content = String(cString: sqlite3_column_text(stmt, 7))
-        let labelsString = String(cString: sqlite3_column_text(stmt, 8))
-        let snippet = String(cString: sqlite3_column_text(stmt, 9))
-        let timestamp = sqlite3_column_int64(stmt, 10)
+    private func extractNote(from stmt: OpaquePointer?) -> Note {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         
-        // parse labels json
-        let labels = (try? JSONSerialization.jsonObject(with: labelsString.data(using: .utf8) ?? Data()) as? [String]) ?? []
-        
-        return EmailData(
-            id: id, originalId: originalId, threadId: threadId, subject: subject, sender: sender,
-            recipient: recipient, date: readableDate, content: content, labels: labels,
-            snippet: snippet, readableDate: readableDate, timestamp: timestamp
-        )
-    }
-    
-    private func extractNote(from stmt: OpaquePointer?) -> NoteData {
         let id = String(cString: sqlite3_column_text(stmt, 0))
         let originalId = sqlite3_column_int(stmt, 1)
         let title = String(cString: sqlite3_column_text(stmt, 2))
@@ -764,153 +1188,248 @@ final class SQLiteService {
         let creationTimestamp = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 8)
         let modificationTimestamp = sqlite3_column_double(stmt, 9)
         
-        return NoteData(
-            id: id, originalId: originalId, title: title, snippet: snippet, content: content,
-            folder: folder, created: created, modified: modified,
-            creationTimestamp: creationTimestamp, modificationTimestamp: modificationTimestamp
+        return Note(id: id, originalId: originalId, title: title, snippet: snippet, content: content, folder: folder, created: created.flatMap(formatter.date), modified: formatter.date(from: modified) ?? Date(timeIntervalSinceReferenceDate: modificationTimestamp), creationTimestamp: creationTimestamp, modificationTimestamp: modificationTimestamp)
+    }
+    
+    private func extractDocument(from stmt: OpaquePointer?) -> Document {
+        let id = String(cString: sqlite3_column_text(stmt, 0))
+        let title = String(cString: sqlite3_column_text(stmt, 1))
+        let content = String(cString: sqlite3_column_text(stmt, 2))
+        let createdAtString = String(cString: sqlite3_column_text(stmt, 3))
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let createdAt = formatter.date(from: createdAtString) ?? Date()
+        return Document(id: id, title: title, content: content, createdAt: createdAt)
+    }
+    
+    private func extractEmail(from stmt: OpaquePointer?) throws -> Email {
+        let id = String(cString: sqlite3_column_text(stmt, 0))
+        let originalId = String(cString: sqlite3_column_text(stmt, 1))
+        let threadId = String(cString: sqlite3_column_text(stmt, 2))
+        let subject = String(cString: sqlite3_column_text(stmt, 3))
+        let sender = String(cString: sqlite3_column_text(stmt, 4))
+        let recipient = String(cString: sqlite3_column_text(stmt, 5))
+        let dateString = String(cString: sqlite3_column_text(stmt, 6))
+        let content = String(cString: sqlite3_column_text(stmt, 7))
+        let labelsJSON = String(cString: sqlite3_column_text(stmt, 8))
+        let snippet = String(cString: sqlite3_column_text(stmt, 9))
+        let timestamp = sqlite3_column_int64(stmt, 10)
+        let createdAtString = String(cString: sqlite3_column_text(stmt, 11))
+        
+        let iso = ISO8601DateFormatter()
+        guard let date = iso.date(from: dateString), let createdAt = iso.date(from: createdAtString) else {
+            throw SQLiteError.step(message: "Date parsing error")
+        }
+        
+        let labelsData = labelsJSON.data(using: .utf8) ?? Data()
+        let labels = (try? JSONSerialization.jsonObject(with: labelsData) as? [String]) ?? []
+        
+        return Email(
+            id: id,
+            originalId: originalId,
+            threadId: threadId,
+            subject: subject,
+            sender: sender,
+            recipient: recipient,
+            date: date,
+            content: content,
+            labels: labels,
+            snippet: snippet,
+            timestamp: timestamp,
+            createdAt: createdAt
         )
     }
     
-    // MARK: - Legacy Document Support
-    
-    func insertDocument(title: String, content: String, embedding: [Float]) throws -> String {
-        let documentId = generateUUID()
+    private func extractMessage(from stmt: OpaquePointer?) -> Message {
+        let id = String(cString: sqlite3_column_text(stmt, 0))
+        let originalId = sqlite3_column_int(stmt, 1)
+        let text = String(cString: sqlite3_column_text(stmt, 2))
+        let dateString = String(cString: sqlite3_column_text(stmt, 3))
+        let timestamp = sqlite3_column_int64(stmt, 4)
+        let isFromMe = sqlite3_column_int(stmt, 5) == 1
+        let isSent = sqlite3_column_int(stmt, 6) == 1
+        let service = String(cString: sqlite3_column_text(stmt, 7))
+        let contact = String(cString: sqlite3_column_text(stmt, 8))
+        let chatName = String(cString: sqlite3_column_text(stmt, 9))
+        let chatId = String(cString: sqlite3_column_text(stmt, 10))
+        let contactNumber = String(cString: sqlite3_column_text(stmt, 11))
+        let createdAtString = String(cString: sqlite3_column_text(stmt, 12))
         
-        // insert document
-        let docSQL = "INSERT INTO Document (Id, Title, Content) VALUES (?, ?, ?);"
-        let stmt = try prepare(docSQL)
-        defer { sqlite3_finalize(stmt) }
-
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, documentId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 2, title, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-              sqlite3_bind_text(stmt, 3, content, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
+        let iso = ISO8601DateFormatter()
+        let date = iso.date(from: dateString) ?? Date()
+        let createdAt = iso.date(from: createdAtString) ?? Date()
+        
+        return Message(
+            id: id,
+            originalId: originalId,
+            text: text,
+            date: date,
+            timestamp: timestamp,
+            isFromMe: isFromMe,
+            isSent: isSent,
+            service: service,
+            contact: contact,
+            chatName: chatName.isEmpty ? nil : chatName,
+            chatId: chatId.isEmpty ? nil : chatId,
+            contactNumber: contactNumber.isEmpty ? nil : contactNumber,
+            createdAt: createdAt
+        )
+    }
+    
+    private func extractThread(from stmt: OpaquePointer?) throws -> Thread {
+        let id = String(cString: sqlite3_column_text(stmt, 0))
+        let typeString = String(cString: sqlite3_column_text(stmt, 1))
+        let threadId = String(cString: sqlite3_column_text(stmt, 2))
+        let itemIdsJSON = String(cString: sqlite3_column_text(stmt, 3))
+        let snippet = String(cString: sqlite3_column_text(stmt, 4))
+        let content = String(cString: sqlite3_column_text(stmt, 5))
+        let createdString = String(cString: sqlite3_column_text(stmt, 6))
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let created = formatter.date(from: createdString) ?? Date()
+        
+        guard let type = ContentType(rawValue: typeString) else {
+            throw SQLiteError.step(message: "Unknown content type: \(typeString)")
         }
+        
+        let data = itemIdsJSON.data(using: .utf8) ?? Data()
+        let itemIds = (try JSONSerialization.jsonObject(with: data) as? [String]) ?? []
+        
+        return Thread(
+            id: id,
+            type: type,
+            itemIds: itemIds,
+            threadId: threadId,
+            snippet: snippet,
+            content: content,
+            created: created
+        )
+    }
+    
+    private func extractThreadChunk(from stmt: OpaquePointer?) throws -> ThreadChunk {
+        let id = String(cString: sqlite3_column_text(stmt, 0))
+        
+        let threadId = String(cString: sqlite3_column_text(stmt, 1))
+        
+        let parentIdsJSON = String(cString: sqlite3_column_text(stmt, 2))
+        let parentIdsData = parentIdsJSON.data(using: .utf8) ?? Data()
+        let parentIds = (try? JSONSerialization.jsonObject(with: parentIdsData) as? [String]) ?? []
+        
+        let typeString = String(cString: sqlite3_column_text(stmt, 3))
+        guard let type = ContentType(rawValue: typeString) else {
+            throw SQLiteError.step(message: "Unknown content type: \(typeString)")
+        }
+        
+        let chunkIndex = Int(sqlite3_column_int(stmt, 4))
+        
+        let startPosition = Int(sqlite3_column_int(stmt, 5))
+        
+        let endPosition = Int(sqlite3_column_int(stmt, 6))
+        
+        let content = String(cString: sqlite3_column_text(stmt, 7))
+        
+        let embeddingCount = self.embeddingDimensions
+        let blobPointer = sqlite3_column_blob(stmt, 8)
+        let blobSize = Int(sqlite3_column_bytes(stmt, 8))
+        let embedding: [Float]
+        if let blobPointer = blobPointer, blobSize == embeddingCount * 4 {
+            embedding = blobToEmbedding(blobPointer, count: embeddingCount)
+        } else {
+            embedding = []
+        }
+        
+        return ThreadChunk(
+            id: id,
+            threadId: threadId,
+            parentIds: parentIds,
+            type: type,
+            content: content,
+            embedding: embedding,
+            chunkIndex: chunkIndex,
+            startPosition: startPosition,
+            endPosition: endPosition
+        )
+    }
+    
+    private func extractItem(from stmt: OpaquePointer?) throws -> Item {
+        guard let stmt = stmt else { throw SQLiteError.step(message: "Invalid statement") }
+        
+        let id = String(cString: sqlite3_column_text(stmt, 0))
+        let typeRaw = String(cString: sqlite3_column_text(stmt, 1))
+        let threadId = String(cString: sqlite3_column_text(stmt, 2))
+        let title = String(cString: sqlite3_column_text(stmt, 3))
+        let content = String(cString: sqlite3_column_text(stmt, 4))
+        let snippet = String(cString: sqlite3_column_text(stmt, 5))
+        let dateString = String(cString: sqlite3_column_text(stmt, 6))
+        let metadataJSON = String(cString: sqlite3_column_text(stmt, 7))
+        
+        let formatter = ISO8601DateFormatter()
+        let date = formatter.date(from: dateString) ?? Date()
+        
+        let metadataData = metadataJSON.data(using: .utf8) ?? Data()
+        let metadata = (try? JSONSerialization.jsonObject(with: metadataData) as? [String: Any]) ?? [:]
+        
+        guard let type = ContentType(rawValue: typeRaw) else {
+            throw SQLiteError.step(message: "Unknown content type: \(typeRaw)")
+        }
+        
+        return Item(
+            id: id,
+            type: type,
+            title: title,
+            content: content,
+            embeddableText: content,
+            snippet: snippet,
+            date: date,
+            threadId: threadId,
+            metadata: metadata
+        )
+    }
+    
+    
+    
+    // MARK: - Private Helpers
+    private var errorMessage: String {
+        if let ptr = sqlite3_errmsg(dbPointer) {
+            return String(cString: ptr)
+        }
+        return "no error"
+    }
+    
+    private func prepare(_ sql: String) throws -> OpaquePointer? {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(dbPointer, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw SQLiteError.prepare(message: errorMessage)
+        }
+        return stmt
+    }
+    
+    func execute(_ sql: String) throws {
+        let stmt = try prepare(sql)
+        defer { sqlite3_finalize(stmt) }
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             throw SQLiteError.step(message: errorMessage)
         }
-        
-        // insert into chunk table
-        try insertChunk(parentId: documentId, contentType: .document, chunkIndex: 0, text: content, embedding: embedding)
-        
-        return documentId
     }
     
-    func findDocument(id: String) throws -> Document? {
-        let sql = "SELECT Id, Title, Content, CreatedAt FROM Document WHERE Id = ?;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-        
-        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-            throw SQLiteError.bind(message: errorMessage)
-        }
-        
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            return extractDocument(from: stmt)
-        }
-        return nil
-    }
-    
-    func findAllDocuments() throws -> [Document] {
-        let sql = "SELECT Id, Title, Content, CreatedAt FROM Document ORDER BY CreatedAt DESC;"
-        let stmt = try prepare(sql)
-        defer { sqlite3_finalize(stmt) }
-
-        var documents = [Document]()
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            documents.append(extractDocument(from: stmt))
-        }
-        return documents
-    }
-    
-    func searchDocuments(queryEmbedding: [Float], limit: Int = 10) throws -> [SearchResult] {
-        let results = try searchAllContent(queryEmbedding: queryEmbedding, limit: limit, contentTypes: [.document])
-        return results.compactMap { result in
-            guard let doc = try? findDocument(id: result.id) else { return nil }
-            return SearchResult(document: doc, distance: result.distance)
-        }
-    }
-    
-    func deleteDocument(id: String) throws {
+    private func beginTransaction() throws {
         try execute("BEGIN TRANSACTION;")
-        defer { try? execute("COMMIT;") }
-        do {
-            let stmt = try prepare("DELETE FROM Document WHERE Id = ?;")
-            defer { sqlite3_finalize(stmt) }
-            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
-            }
-            guard sqlite3_step(stmt) == SQLITE_DONE else {
-                throw SQLiteError.step(message: errorMessage)
-            }
-        }
-
-        do {
-            let stmt = try prepare("DELETE FROM Chunk WHERE parent_id = ?;")
-            defer { sqlite3_finalize(stmt) }
-            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            guard sqlite3_bind_text(stmt, 1, id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
-            }
-            guard sqlite3_step(stmt) == SQLITE_DONE else {
-                throw SQLiteError.step(message: errorMessage)
-            }
-        }
     }
-
     
-    func nukeDB() {
-        print(try! execute("DELETE FROM Message;"))
-        print(try! execute("DELETE FROM Email;"))
-        print(try! execute("DELETE FROM Note;"))
-        print(try! execute("DELETE FROM Document;"))
-        print(try! execute("DELETE FROM Chunk;"))
+    private func commitTransaction() throws {
+        try execute("COMMIT;")
+    }
+    
+    func clearAllData() throws {
+        try execute("DELETE FROM Document;")
+        try execute("DELETE FROM Message;")
+        try execute("DELETE FROM Note;")
+        try execute("DELETE FROM Email;")
+        try execute("DELETE FROM Thread;")
+        try execute("DELETE FROM Chunk;")
+        try execute("DELETE FROM Item;")
     }
 }
 
-// MARK: - Data Models
 
-struct MessageData {
-    let id: String? // our db id (now UUID)
-    let originalId: Int32 // their id
-    let text: String
-    let date: String
-    let timestamp: Int64
-    let isFromMe: Bool
-    let isSent: Bool
-    let service: String
-    let contact: String?
-    let chatName: String
-    let chatId: String
-}
-
-struct EmailData {
-    let id: String? // our db id (now UUID)
-    let originalId: String // their id
-    let threadId: String
-    let subject: String
-    let sender: String
-    let recipient: String
-    let date: String
-    let content: String
-    let labels: [String]
-    let snippet: String
-    let readableDate: String
-    let timestamp: Int64
-}
-
-struct NoteData {
-    let id: String? // our db id (now UUID)
-    let originalId: Int32 // their id
-    let title: String
-    let snippet: String?
-    let content: String
-    let folder: String
-    let created: String?
-    let modified: String
-    let creationTimestamp: Double?
-    let modificationTimestamp: Double
-}

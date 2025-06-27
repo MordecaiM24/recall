@@ -2,521 +2,247 @@
 //  ContentService.swift
 //  sqlite
 //
-//  Created by Mordecai Mengesteab on 6/17/25.
+//  Created by Mordecai Mengesteab on 6/24/25.
 //
 
 import Foundation
-import Combine
 
-enum ContentServiceError: Error {
-    case embeddingFailed(Error)
-    case storageFailed(Error)
-    case searchFailed(Error)
-    case serviceUnavailable
-    case invalidContentType
+enum ordering {
+    case createdAtAsc
+    case createdAtDesc
+    case dateAsc
+    case dateDesc
+    case titleAsc
+    case titleDesc
+    
+    var sql: String {
+        switch self {
+        case .createdAtAsc: return "created_at ASC"
+        case .createdAtDesc: return "created_at DESC"
+        case .dateAsc: return "date ASC"
+        case .dateDesc: return "date DESC"
+        case .titleAsc: return "title ASC"
+        case .titleDesc: return "title DESC"
+        }
+    }
 }
 
-@MainActor
 final class ContentService: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var error: Error?
     
-    private let sqliteService: SQLiteService
-    private let embeddingService: EmbeddingService
+    private let sqlite: SQLiteService
+    private let embedding: EmbeddingService
     
     init() throws {
-        self.embeddingService = try EmbeddingService()
-        self.sqliteService = try SQLiteService(embeddingDimensions: embeddingService.embeddingDimensions)
+        self.embedding = try EmbeddingService()
+        self.sqlite = try SQLiteService(embeddingDimensions: embedding.embeddingDimensions)
         
-        try sqliteService.setupDatabase()
+        try sqlite.setupDatabase()
     }
     
-    // dependency injection initializer for testing
-    init(sqliteService: SQLiteService, embeddingService: EmbeddingService) throws {
-        self.sqliteService = sqliteService
-        self.embeddingService = embeddingService
+    init(sqlite: SQLiteService, embedding: EmbeddingService) {
+        self.sqlite = sqlite
+        self.embedding = embedding
     }
     
-    // MARK: - Document Operations
-    
-    func addDocument(title: String, content: String) async throws -> String {
-        isLoading = true
-        defer { isLoading = false }
-        
-        do {
-            let document = Document(
-                id: UUID().uuidString,
-                title: title,
-                content: content
-            )
-            
-            let embedding = try await embeddingService.embed(text: document.embeddableText)
-            let documentId = try sqliteService.insertDocument(
-                title: document.title,
-                content: document.content,
-                embedding: embedding
-            )
-            
-            return documentId
-        } catch {
-            self.error = ContentServiceError.embeddingFailed(error)
-            throw error
-        }
-    }
-    
-    func getAllDocuments() async throws -> [Document] {
-        do {
-            return try sqliteService.findAllDocuments()
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func deleteDocument(id: String) async throws {
+    // single entry point for writes
+    func add(_ item: Item) async throws -> String {
         isLoading = true; defer { isLoading = false }
-        do {
-            try sqliteService.deleteDocument(id: id)
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
+        switch item.type {
+        case .document:
+            return try sqlite.insertDocument(Document(id: item.id, title: item.title, content: item.content, createdAt: item.date))
+        case .message:
+            return try sqlite.insertMessage(Message(
+                id: item.id,
+                originalId: item.metadata["originalId"] as? Int32 ?? 0,
+                text: item.content,
+                date: item.date,
+                timestamp: item.metadata["timestamp"] as? Int64 ?? 0,
+                isFromMe: item.metadata["isFromMe"] as? Bool ?? false,
+                isSent: item.metadata["isSent"] as? Bool ?? false,
+                service: item.metadata["service"] as? String ?? "",
+                contact: item.metadata["contact"] as? String ?? "",
+                chatName: item.metadata["chatName"] as? String,
+                chatId: item.metadata["chatId"] as? String,
+                contactNumber: item.metadata["contactNumber"] as? String,
+                createdAt: item.metadata["createdAt"] as? Date ?? item.date
+            ))
+        case .email:
+            return try sqlite.insertEmail(Email(
+                id: item.id,
+                originalId: item.metadata["originalId"] as? String ?? "",
+                threadId: item.threadId,
+                subject: item.title,
+                sender: item.metadata["sender"] as? String ?? "",
+                recipient: item.metadata["recipient"] as? String ?? "",
+                date: item.date,
+                content: item.content,
+                labels: item.metadata["labels"] as? [String] ?? [],
+                snippet: item.snippet,
+                timestamp: item.metadata["timestamp"] as? Int64 ?? 0,
+                createdAt: item.metadata["createdAt"] as? Date ?? item.date
+            ))
+        case .note:
+            return try sqlite.insertNote(Note(
+                id: item.id,
+                originalId: item.metadata["originalId"] as? Int32 ?? 0,
+                title: item.title,
+                snippet: item.snippet,
+                content: item.content,
+                folder: item.metadata["folder"] as? String ?? "",
+                created: item.metadata["created"] as? Date,
+                modified: item.date,
+                creationTimestamp: item.metadata["creationTimestamp"] as? Double,
+                modificationTimestamp: item.metadata["modificationTimestamp"] as? Double ?? 0,
+                createdAt: item.metadata["createdAt"] as? Date ?? item.date
+            ))
         }
     }
     
-    // MARK: - Message Operations
+    // single entry point for (inefficient) batch writes
+    func add(_ items: [Item]) async throws -> [String] {
+        var ids: [String] = []
+        for item in items {
+            ids.append(try await add(item))
+        }
+        return ids
+    }
     
-    func addMessage(_ message: Message) async throws -> String {
-        isLoading = true
-        defer { isLoading = false }
+    // single entry point for paginated, etc reads
+    func all(
+        _ type: ContentType?,
+        limit: Int? = nil,
+        offset: Int? = nil,
+        orderBy: ordering? = nil
+    ) async throws -> [Item] {
+        switch type {
+        case .document:
+            return try sqlite.getAllDocuments(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        case .message:
+            return try sqlite.getAllMessages(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        case .email:
+            return try sqlite.getAllEmails(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        case .note:
+            return try sqlite.getAllNotes(limit: limit, offset: offset, orderBy: orderBy?.sql).map(Item.init(from:))
+        default:
+            return try sqlite.getAllItems(limit: limit, offset: offset, orderBy: orderBy?.sql)
+        }
+    }
+    
+    func batch(
+        ids: [String]
+    ) throws -> [Item] {
+        return try sqlite.findItems(ids: ids)
+    }
+    
+    func getAllThreads() async throws -> [Thread] {
+        return try sqlite.getAllThreads()
+    }
+    
+    func one(_ type: ContentType?, id: String) async throws -> Item? {
+        switch type {
+        case .document: return try sqlite.findDocument(id: id).map(Item.init(from:))
+        case .message: return try sqlite.findMessage(id: id).map(Item.init(from:))
+        case .email: return try sqlite.findEmail(id: id).map(Item.init(from:))
+        case .note: return try sqlite.findNote(id: id).map(Item.init(from:))
+        default: return try sqlite.findItem(id: id)
+        }
+    }
+    
+    func byThreadId(_ threadId: String, type: ContentType? = nil, limit: Int? = nil,
+                    offset: Int? = nil,
+                    orderBy: ordering? = nil) async throws -> [Item] {
+        return try sqlite.getItemsByThreadId(threadId, type: type?.rawValue, limit: limit, offset: offset, orderBy: orderBy?.sql)
+    }
+    
+    
+    func search(_ query: String) async throws -> [SearchResult] {
+        let queryEmbedding = try await embedding.embed(text: query)
+        return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding)
+    }
+    
+    func search(_ query: String, limit: Int) async throws -> [SearchResult] {        
+        let queryEmbedding = try await embedding.embed(text: query)
+        return try sqlite.searchThreadChunks(queryEmbedding: queryEmbedding, limit: limit)
+    }
+    
+    // not a fan of the lack of DRY here but what can ya do
+    
+    // TODO: improve atomicity here
+    // TODO: put embedding on background thread
+    func importEmails(_ emails: [Email]) async throws -> [String] {
+        let emailIds = try sqlite.insertEmails(emails)
+        let items = emails.map { Item(from: $0) }
         
-        do {
-            let messageId = try sqliteService.insertMessage(message.toData)
-            let embedding = try await embeddingService.embed(text: message.embeddableText)
-            
-            try sqliteService.insertChunk(
-                parentId: messageId,
-                contentType: .message,
-                chunkIndex: 0,
-                text: message.embeddableText,
-                embedding: embedding
-            )
-            
-            return messageId
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func getMessage(id: String) async throws -> Message? {
-        do {
-            guard let data = try sqliteService.findMessage(id: id) else {
-                return nil
-            }
-            return Message(from: data)
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func getAllMessages() async throws -> [Message] {
-        do {
-            return try sqliteService.findAllMessages()
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func deleteMessage(id: String) async throws {
-        isLoading = true; defer { isLoading = false }
-        do {
-            try sqliteService.deleteMessage(id: id)
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-
-    func deleteMessages(ids: [String]) async throws {
-        isLoading = true; defer { isLoading = false }
-        do {
-            for id in ids {
-                try sqliteService.deleteMessage(id: id)
-            }
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    // MARK: - Email Operations
-    
-    func addEmail(_ email: Email) async throws -> String {
-        isLoading = true
-        defer { isLoading = false }
+        try await createThreads(from: items)
         
-        do {
-            let emailId = try sqliteService.insertEmail(email.toData)
-            let embedding = try await embeddingService.embed(text: email.embeddableText)
-            
-            try sqliteService.insertChunk(
-                parentId: emailId,
-                contentType: .email,
-                chunkIndex: 0,
-                text: email.embeddableText,
-                embedding: embedding
-            )
-            
-            return emailId
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
+        return emailIds
     }
     
-    func getEmail(id: String) async throws -> Email? {
-        do {
-            guard let data = try sqliteService.findEmail(id: id) else {
-                return nil
-            }
-            return Email(from: data)
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func getAllEmails() async throws -> [Email] {
-        do {
-            return try sqliteService.findAllEmails()
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func deleteEmail(id: String) async throws {
-        isLoading = true; defer { isLoading = false }
-        do {
-            try sqliteService.deleteEmail(id: id)
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-
-    // MARK: - Note Operations
-    
-    func addNote(_ note: Note) async throws -> String {
-        isLoading = true
-        defer { isLoading = false }
+    func importMessages(_ messages: [Message]) async throws -> [String] {
+        let messageIds = try sqlite.insertMessages(messages)
+        let items = messages.map { Item(from: $0) }
         
-        do {
-            let noteId = try sqliteService.insertNote(note.toData)
-            let embedding = try await embeddingService.embed(text: note.embeddableText)
-            
-            try sqliteService.insertChunk(
-                parentId: noteId,
-                contentType: .note,
-                chunkIndex: 0,
-                text: note.embeddableText,
-                embedding: embedding
-            )
-            
-            return noteId
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func getNote(id: String) async throws -> Note? {
-        do {
-            guard let data = try sqliteService.findNote(id: id) else {
-                return nil
-            }
-            return Note(from: data)
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func getAllNotes() async throws -> [Note] {
-        do {
-            return try sqliteService.findAllNotes()
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func deleteNote(id: String) async throws {
-        isLoading = true; defer { isLoading = false }
-        do {
-            try sqliteService.deleteNote(id: id)
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    // MARK: - Unified Search
-    
-    func search(query: String, limit: Int = 20, contentTypes: [ContentType] = ContentType.allCases) async -> [UnifiedContent] {
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else { return [] }
+        try await createThreads(from: items)
         
-        do {
-            let queryEmbedding = try await embeddingService.embed(text: trimmedQuery)
-            
-            let results = try sqliteService.searchAllContent(
-                queryEmbedding: queryEmbedding,
-                limit: limit,
-                contentTypes: contentTypes
-            )
-            
-            var unifiedResults: [UnifiedContent] = []
-            
-            for result in results {
-                switch result.type {
-                case .document:
-                    if let doc = try? sqliteService.findDocument(id: result.id) {
-                        unifiedResults.append(UnifiedContent(from: doc, distance: result.distance))
-                    }
-                case .message:
-                    if let data = try? sqliteService.findMessage(id: result.id) {
-                        let message = Message(from: data)
-                        unifiedResults.append(UnifiedContent(from: message, distance: result.distance))
-                    }
-                case .email:
-                    if let data = try? sqliteService.findEmail(id: result.id) {
-                        let email = Email(from: data)
-                        unifiedResults.append(UnifiedContent(from: email, distance: result.distance))
-                    }
-                case .note:
-                    if let data = try? sqliteService.findNote(id: result.id) {
-                        let note = Note(from: data)
-                        unifiedResults.append(UnifiedContent(from: note, distance: result.distance))
-                    }
+        return messageIds
+    }
+    
+    func importNotes(_ notes: [Note]) async throws -> [String] {
+        let noteIds = try sqlite.insertNotes(notes)
+        let items = notes.map { Item(from: $0 ) }
+        
+        try await createThreads(from: items)
+        
+        return noteIds
+    }
+    
+    func importDocuments(_ documents: [Document]) async throws -> [String] {
+        let documentIds = try sqlite.insertDocuments(documents)
+        let items = documents.map { Item(from: $0) }
+        
+        try await createThreads(from: items)
+        
+        return documentIds
+    }
+    
+    func createThreads(from items: [Item]) async throws {
+        // this is completely unimportant - it was autocomplete generated, just thought it was funny
+        // let queue = DispatchQueue(label: "com.github.jakeheiser.mailbox.import-threads")
+        let grouped = Dictionary(grouping: items, by: { $0.threadId })
+        let itemGroups = Array(grouped.values)
+        
+        let threads = try itemGroups.map { try Thread(from: $0) }
+        
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for thread in threads {
+                // again! this is glue - change this if possible. threadId is going to be reassigned before we insert into db
+                // but original thread id's based on the imported data type should be separate from the db generated uuid we're creating.
+                
+                var dbItems = items.filter { $0.threadId == thread.threadId }
+                dbItems = dbItems.map { item in
+                    var newItem = item
+                    newItem.threadId = thread.id
+                    return newItem
+                }
+                
+                print(thread.type.rawValue)
+                print(thread.snippet)
+                
+                group.addTask {
+                    let chunks = try await self.embedding.createThreadChunks(from: thread)
+                    _ = try self.sqlite.insertThread(thread)
+                    _ = try self.sqlite.insertItems(dbItems)
+                    _ = try self.sqlite.insertThreadChunks(chunks)
                 }
             }
             
-            return unifiedResults
-            
-        } catch {
-            await MainActor.run {
-                self.error = ContentServiceError.searchFailed(error)
-            }
-            return []
+            try await group.waitForAll()
         }
     }
     
-    func getAllContent() async -> [UnifiedContent] {
-        var allContent: [UnifiedContent] = []
-        
-        do {
-            let documents = try await getAllDocuments()
-            allContent.append(contentsOf: documents.map {UnifiedContent(from: $0, distance: 1.0)})
-        } catch {
-            print("failed to load documents")
-        }
-        
-        do {
-            let messages = try await getAllMessages()
-            allContent.append(contentsOf: messages.map {UnifiedContent(from: $0, distance: 1.0)})
-        } catch {
-            print("failed to load messages")
-        }
-        
-        do {
-            let notes = try await getAllNotes()
-            allContent.append(contentsOf: notes.map {UnifiedContent(from: $0, distance: 1.0)})
-        } catch {
-            print("failed to load messages")
-        }
-        
-        do {
-            let emails = try await getAllEmails()
-            allContent.append(contentsOf: emails.map {UnifiedContent(from: $0, distance: 1.0)})
-        } catch {
-            print("failed to load emails")
-        }
-        
-        return allContent
-    }
-    
-    func deleteContent(type: ContentType, id: String) async throws {
-        switch type {
-        case .document:  try await deleteDocument(id: id)
-        case .message:   try await deleteMessage(id: id)
-        case .email:     try await deleteEmail(id: id)
-        case .note:      try await deleteNote(id: id)
-        }
-    }
-
-    func deleteContents(type: ContentType, ids: [String]) async throws {
-        switch type {
-        case .document:  try await deleteDocuments(ids: ids)
-        case .message:   try await deleteMessages(ids: ids)
-        case .email:     try await deleteEmails(ids: ids)
-        case .note:      try await deleteNotes(ids: ids)
-        }
-    }
-    
-    
-    // MARK: - Batch Operations
-    
-    func addMessages(_ messages: [Message]) async throws -> [String] {
-        isLoading = true
-        defer { isLoading = false }
-        
-        var messageIds: [String] = []
-        
-        do {
-            for message in messages {
-                let messageId = try sqliteService.insertMessage(message.toData)
-                let embedding = try await embeddingService.embed(text: message.embeddableText)
-                
-                try sqliteService.insertChunk(
-                    parentId: messageId,
-                    contentType: .message,
-                    chunkIndex: 0,
-                    text: message.embeddableText,
-                    embedding: embedding
-                )
-                
-                messageIds.append(messageId)
-            }
-            
-            return messageIds
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-
-    func deleteDocuments(ids: [String]) async throws {
-        isLoading = true; defer { isLoading = false }
-        do {
-            for id in ids {
-                try sqliteService.deleteDocument(id: id)
-            }
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func addEmails(_ emails: [Email]) async throws -> [String] {
-        isLoading = true
-        defer { isLoading = false }
-        
-        var emailIds: [String] = []
-        
-        do {
-            for email in emails {
-                let emailId = try sqliteService.insertEmail(email.toData)
-                let embedding = try await embeddingService.embed(text: email.embeddableText)
-                
-                try sqliteService.insertChunk(
-                    parentId: emailId,
-                    contentType: .email,
-                    chunkIndex: 0,
-                    text: email.embeddableText,
-                    embedding: embedding
-                )
-                
-                emailIds.append(emailId)
-            }
-            
-            return emailIds
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func deleteEmails(ids: [String]) async throws {
-        isLoading = true; defer { isLoading = false }
-        do {
-            for id in ids {
-                try sqliteService.deleteEmail(id: id)
-            }
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func addNotes(_ notes: [Note]) async throws -> [String] {
-        isLoading = true
-        defer { isLoading = false }
-        
-        var noteIds: [String] = []
-        
-        do {
-            for note in notes {
-                let noteId = try sqliteService.insertNote(note.toData)
-                let embedding = try await embeddingService.embed(text: note.embeddableText)
-                
-                try sqliteService.insertChunk(
-                    parentId: noteId,
-                    contentType: .note,
-                    chunkIndex: 0,
-                    text: note.embeddableText,
-                    embedding: embedding
-                )
-                
-                noteIds.append(noteId)
-            }
-            
-            return noteIds
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    func deleteNotes(ids: [String]) async throws {
-        isLoading = true; defer { isLoading = false }
-        do {
-            for id in ids {
-                try sqliteService.deleteNote(id: id)
-            }
-        } catch {
-            self.error = ContentServiceError.storageFailed(error)
-            throw error
-        }
-    }
-    
-    // MARK: - Search by Content Type
-    
-    func searchDocuments(query: String, limit: Int = 10) async -> [UnifiedContent] {
-        return await search(query: query, limit: limit, contentTypes: [.document])
-    }
-    
-    func searchMessages(query: String, limit: Int = 10) async -> [UnifiedContent] {
-        return await search(query: query, limit: limit, contentTypes: [.message])
-    }
-    
-    func searchEmails(query: String, limit: Int = 10) async -> [UnifiedContent] {
-        return await search(query: query, limit: limit, contentTypes: [.email])
-    }
-    
-    func searchNotes(query: String, limit: Int = 10) async -> [UnifiedContent] {
-        return await search(query: query, limit: limit, contentTypes: [.note])
-    }
-    
-    // MARK: - Error Handling
-    
-    func clearError() {
-        error = nil
-    }
-    
-    func nukeDB() {
-        sqliteService.nukeDB()
+    func clearAll() {
+        try! sqlite.clearAllData()
     }
 }

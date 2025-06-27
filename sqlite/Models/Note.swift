@@ -63,3 +63,25 @@ extension Note {
         return title
     }
 }
+
+extension Note {
+    init?(item: Item) {
+        guard item.type == .note else { return nil }
+        guard let originalId = item.metadata["originalId"] as? String,
+              let folder = item.metadata["folder"] as? String else { return nil }
+        
+        let created: Date? = (item.metadata["created"] as? TimeInterval).flatMap { Date(timeIntervalSince1970: $0) }
+        self.init(
+            id: item.id,
+            originalId: Int32(originalId) ?? 0,
+            title: item.title,
+            snippet: item.snippet,
+            content: item.content,
+            folder: folder,
+            created: created,
+            modified: item.date,
+            creationTimestamp: nil,
+            modificationTimestamp: item.date.timeIntervalSince1970
+        )
+    }
+}

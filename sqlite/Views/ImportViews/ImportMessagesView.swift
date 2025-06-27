@@ -15,9 +15,9 @@ struct MessageImportData: Codable {
     let is_from_me: Bool
     let is_sent: Bool
     let service: String
-    let contact: String?
-    let chat_name: String
-    let chat_id: String
+    let contact: String
+    let chat_name: String?
+    let chat_id: String?
     let contact_number: String?
 }
 
@@ -140,55 +140,38 @@ struct ImportMessagesView: View {
                 defer { url.stopAccessingSecurityScopedResource() }
                 
                 let data = try Data(contentsOf: url)
-                let messageData = try JSONDecoder().decode([MessageImportData].self, from: data)
+                let messageData = try JSONDecoder().decode([MessageImportData].self, from: data).sorted(by: { $0.date < $1.date }).suffix(500)
                 
-                var successCount = 0
-                var errorCount = 0
-                
-                for msgData in messageData {
-                    do {
-                        let message = Message(
-                            id: UUID().uuidString,
-                            originalId: Int32(msgData.id),
-                            text: msgData.text,
-                            date: parseDate(msgData.date) ?? Date(),
-                            timestamp: msgData.timestamp,
-                            isFromMe: msgData.is_from_me,
-                            isSent: msgData.is_sent,
-                            service: msgData.service,
-                            contact: msgData.contact,
-                            chatName: msgData.chat_name,
-                            chatId: msgData.chat_id
-                        )
-                        
-                        // attempt to add message - this includes both db insert and embedding
-                        _ = try await contentService.addMessage(message)
-                        successCount += 1
-                        
-                    } catch {
-                        print("failed to import message \(msgData.id): \(error)")
-                        errorCount += 1
-                        // continue with next message instead of stopping
-                    }
+                let messages = messageData.map { msgData in
+                    Message(
+                        id: UUID().uuidString,
+                        originalId: Int32(msgData.id),
+                        text: msgData.text,
+                        date: parseDate(msgData.date) ?? Date(),
+                        timestamp: msgData.timestamp,
+                        isFromMe: msgData.is_from_me,
+                        isSent: msgData.is_sent,
+                        service: msgData.service,
+                        contact: msgData.contact,
+                        chatName: msgData.chat_name,
+                        chatId: msgData.chat_id,
+                        contactNumber: msgData.contact_number
+                    )
                 }
                 
+                let importedIds = try await contentService.importMessages(messages)
+                
                 await MainActor.run {
-                    importedCount = successCount
+                    importedCount = importedIds.count
                     isImporting = false
-                    if successCount > 0 {
-                        showingSuccess = true
-                        if errorCount > 0 {
-                            print("import completed with \(successCount) successes and \(errorCount) errors")
-                        }
-                    } else {
-                        importError = "no messages were imported successfully (\(errorCount) failed)"
-                    }
+                    showingSuccess = true
                 }
                 
             } catch {
                 await MainActor.run {
                     isImporting = false
                     importError = "failed to import messages: \(error.localizedDescription)"
+                    print(error)
                 }
             }
         }

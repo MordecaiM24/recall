@@ -34,11 +34,7 @@ struct MainTabView: View {
                     Text("Import")
                 }
             
-            EmergencyButtonView()
-                .tabItem {
-                    Image(systemName: "exclamationmark.triangle")
-                    Text("Nuke")
-                }
+            
         }
         .accentColor(.blue)
     }

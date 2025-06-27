@@ -9,14 +9,15 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject var contentService: ContentService
+    @State private var allItems: [Item] = []
+    @State private var allThreads: [Thread] = []
+    @State private var contentCounts: [ContentType: Int] = [:]
     @State private var selectedContentType: ContentType? = nil
     @State private var sortOption: SortOption = .dateDescending
     @State private var searchText = ""
-    @State private var allContent: [UnifiedContent] = []
-    @State private var isLoading = true
-    @State private var selection = Set<UUID>()
     @FocusState private var isTextFieldFocused: Bool
-    @Environment(\.editMode) private var editMode
+    
+    private let pageSize = 50
     
     enum SortOption: String, CaseIterable {
         case dateDescending = "Date (Newest)"
@@ -26,8 +27,8 @@ struct LibraryView: View {
         case typeAscending = "Type"
     }
     
-    var filteredAndSortedContent: [UnifiedContent] {
-        var content = allContent
+    var filteredAndSortedContent: [Thread] {
+        var content = allThreads
         
         // filter by content type
         if let selectedType = selectedContentType {
@@ -38,7 +39,7 @@ struct LibraryView: View {
         if !searchText.isEmpty {
             let searchLower = searchText.lowercased()
             content = content.filter {
-                $0.title.lowercased().contains(searchLower) ||
+                $0.snippet.lowercased().contains(searchLower) ||
                 $0.content.lowercased().contains(searchLower)
             }
         }
@@ -46,13 +47,13 @@ struct LibraryView: View {
         // sort
         switch sortOption {
         case .dateDescending:
-            content.sort { $0.date > $1.date }
+            content.sort { $0.created > $1.created }
         case .dateAscending:
-            content.sort { $0.date < $1.date }
+            content.sort { $0.created < $1.created }
         case .titleAscending:
-            content.sort { $0.title.lowercased() < $1.title.lowercased() }
+            content.sort { $0.snippet.lowercased() < $1.snippet.lowercased() }
         case .titleDescending:
-            content.sort { $0.title.lowercased() > $1.title.lowercased() }
+            content.sort { $0.snippet.lowercased() > $1.snippet.lowercased() }
         case .typeAscending:
             content.sort { $0.type.rawValue < $1.type.rawValue }
         }
@@ -86,19 +87,21 @@ struct LibraryView: View {
                     .background(Color(.systemGray6))
                     .cornerRadius(10)
                     
-                    // filters
+                    // filters with counts
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
-                            // content type filter
+                            // all content filter
                             Button(action: { selectedContentType = nil }) {
-                                Text("All")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(selectedContentType == nil ? Color.blue : Color(.systemGray5))
-                                    .foregroundColor(selectedContentType == nil ? .white : .primary)
-                                    .cornerRadius(16)
+                                HStack(spacing: 4) {
+                                    Text("All")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(selectedContentType == nil ? Color.blue : Color(.systemGray5))
+                                .foregroundColor(selectedContentType == nil ? .white : .primary)
+                                .cornerRadius(16)
                             }
                             .buttonStyle(.plain)
                             
@@ -110,6 +113,12 @@ struct LibraryView: View {
                                         Text(type.displayName)
                                             .font(.caption)
                                             .fontWeight(.medium)
+                                        
+                                        if let count = contentCounts[type], count > 0 {
+                                            Text("(\(count))")
+                                                .font(.caption2)
+                                                .opacity(0.7)
+                                        }
                                     }
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
@@ -158,8 +167,8 @@ struct LibraryView: View {
                 
                 Divider()
                 
-                // content list
-                if isLoading {
+                // content list with pagination
+                if contentService.isLoading && allThreads.isEmpty {
                     VStack(spacing: 16) {
                         Spacer()
                         ProgressView()
@@ -167,17 +176,14 @@ struct LibraryView: View {
                             .foregroundColor(.secondary)
                         Spacer()
                     }
-                } else if allContent.isEmpty {
+                } else if allThreads.isEmpty {
                     EmptyLibraryView()
                 } else if filteredAndSortedContent.isEmpty {
                     NoResultsLibraryView(hasFilters: selectedContentType != nil || !searchText.isEmpty)
                 } else {
-//                    LibraryContentList(content: filteredAndSortedContent)
-                    List(selection: $selection) {
-                        ForEach(filteredAndSortedContent) { item in
-                            LibraryItemRow(content: item, reload: loadContent)
-                        }
-                    }.listStyle(.plain)
+                    PaginatedLibraryContentList(
+                        content: filteredAndSortedContent
+                    )
                 }
             }
             .navigationTitle("Library")
@@ -188,38 +194,88 @@ struct LibraryView: View {
                 }
                 
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: loadContent) {
+                    Button(action: { refresh() }) {
                         Image(systemName: "arrow.clockwise")
                     }
+                    .disabled(contentService.isLoading)
                 }
             }
             .onTapGesture {
                 isTextFieldFocused = false
             }
+            .refreshable {
+                refresh()
+            }
         }
-        .onAppear {
-            loadContent()
+        .task {
+            await initialLoad()
+        }
+        .onReceive(contentService.$isLoading) { _ in
+            if !contentService.isLoading {
+                refresh()
+            }
         }
     }
     
-    func loadContent() {
-        isLoading = true
+    func initialLoad() async {
+        guard !contentService.isLoading else { return }
         
+        allThreads = []
+        
+        do {
+            allThreads = try await contentService.getAllThreads()
+        } catch {
+            print("Error loading content: \(error)")
+        }
+    }
+    
+    func refresh() {
         Task {
-            let results = await contentService.getAllContent()
-            
-            await MainActor.run {
-                var combinedContent = results
-                
-                allContent = combinedContent
-                isLoading = false
+            await initialLoad()
+        }
+    }
+}
+
+struct PaginatedLibraryContentList: View {
+    let content: [Thread]
+    
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(Array(content.enumerated()), id: \.element.id) { index, thread in
+                    LibraryItemCard(thread: thread)
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+struct ItemDetailLoaderView: View {
+    let itemId: String
+    let itemType: ContentType
+    @EnvironmentObject var contentService: ContentService
+    @State private var item: Item?
+    
+    var body: some View {
+        VStack {
+            if let item = item {
+                ContentDetailView(item: item)
+            } else {
+                ProgressView()
+                    .onAppear {
+                        Task {
+                            item = try? await contentService.one(itemType, id: itemId)
+                        }
+                    }
             }
         }
     }
 }
 
+
 struct LibraryItemRow: View {
-    let content: UnifiedContent
+    let item: Item
     let reload: () -> Void
     @EnvironmentObject var contentService: ContentService
     @State private var showingDetail = false
@@ -228,25 +284,25 @@ struct LibraryItemRow: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(spacing: 8) {
-                Image(systemName: content.typeIcon).font(.title)
-                Text(content.type.displayName)
+                Image(systemName: item.type.icon).font(.title)
+                Text(item.type.displayName)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
             .frame(width: 60)
             
             VStack(alignment: .leading) {
-                Text(content.displayTitle)
+                Text(item.title)
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .lineLimit(2)
                 
-                Text(content.snippet)
+                Text(item.snippet)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 
-                Text(content.formattedDate)
+                Text(item.date, style: .date)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -262,15 +318,15 @@ struct LibraryItemRow: View {
         }
         .contentShape(Rectangle())
         .sheet(isPresented: $showingDetail) {
-            ContentDetailView(content: content)
+            ContentDetailView(item: item)
         }
         .swipeActions {
             Button(role: .destructive) {
                 Task {
-                    try? await contentService.deleteContent(
-                        type: content.type,
-                        id: content.id
-                    )
+                    // try? await contentService.deleteContent(
+                    //     type: content.type,
+                    //     id: content.id
+                    // )
                     
                     reload()
                 }
@@ -295,7 +351,7 @@ struct EmptyLibraryView: View {
                     .font(.title2)
                     .fontWeight(.semibold)
                 
-                Text("import some messages, emails, notes, or documents to get started")
+                Text("import some messages, emails, notes, or documents to getget started")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -336,13 +392,13 @@ struct NoResultsLibraryView: View {
 }
 
 struct LibraryContentList: View {
-    let content: [UnifiedContent]
+    let content: [Thread]
     
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                ForEach(content) { item in
-                    LibraryItemCard(content: item)
+                ForEach(content) { thread in
+                    LibraryItemCard(thread: thread)
                 }
             }
             .padding()
@@ -351,7 +407,7 @@ struct LibraryContentList: View {
 }
 
 struct LibraryItemCard: View {
-    let content: UnifiedContent
+    let thread: Thread
     @State private var showingDetail = false
     
     var body: some View {
@@ -359,10 +415,10 @@ struct LibraryItemCard: View {
             HStack(spacing: 12) {
                 // type indicator
                 VStack {
-                    Image(systemName: content.typeIcon)
+                    Image(systemName: thread.type.icon)
                         .font(.title3)
                     
-                    Text(content.type.displayName)
+                    Text(thread.type.displayName)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -370,19 +426,19 @@ struct LibraryItemCard: View {
                 
                 // content info
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(content.displayTitle)
+                    Text(thread.snippet)
                         .font(.subheadline)
                         .fontWeight(.medium)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
                     
-                    Text(content.snippet)
+                    Text(thread.content.prefix(100))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.leading)
                         .lineLimit(2)
                     
-                    Text(content.formattedDate)
+                    Text(thread.created, style: .date)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -400,7 +456,7 @@ struct LibraryItemCard: View {
         }
         .buttonStyle(.plain)
         .sheet(isPresented: $showingDetail) {
-            ContentDetailView(content: content)
+            ThreadDetailLoaderView(thread: thread)
         }
     }
 }
