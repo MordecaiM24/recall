@@ -219,11 +219,10 @@ final class SQLiteService {
         limit: Int = 20,
         types: [ContentType]? = ContentType.allCases
     ) throws -> [SearchResult] {
-        return try sync {
-            let contentTypes = types ?? ContentType.allCases
-            // Build the “IN (?,?,…)” part dynamically
-            let placeholders = contentTypes.map { _ in "?" }.joined(separator: ",")
-            let sql = """
+        let contentTypes = types ?? ContentType.allCases
+        // Build the “IN (?,?,…)” part dynamically
+        let placeholders = contentTypes.map { _ in "?" }.joined(separator: ",")
+        let sql = """
             SELECT id, thread_id, distance
             FROM Chunk
             WHERE type IN (\(placeholders))
@@ -232,53 +231,53 @@ final class SQLiteService {
             ORDER BY distance
             LIMIT ?;
             """
-            
-            let stmt = try prepare(sql)
-            defer { sqlite3_finalize(stmt) }
-            
-            let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            
-            for (i, ct) in contentTypes.enumerated() {
-                guard sqlite3_bind_text(stmt, Int32(i + 1), ct.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
-                    throw SQLiteError.bind(message: errorMessage)
-                }
-            }
-            
-            let blob = embeddingToBlob(queryEmbedding)
-            let blobIndex = contentTypes.count + 1
-            guard sqlite3_bind_blob(stmt, Int32(blobIndex), blob, Int32(blob.count), nil) == SQLITE_OK else {
+        
+        let stmt = try prepare(sql)
+        defer { sqlite3_finalize(stmt) }
+        
+        let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        
+        for (i, ct) in contentTypes.enumerated() {
+            guard sqlite3_bind_text(stmt, Int32(i + 1), ct.rawValue, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
                 throw SQLiteError.bind(message: errorMessage)
             }
-            
-            let limitIndex = contentTypes.count + 2
-            guard sqlite3_bind_int(stmt, Int32(limitIndex), Int32(limit)) == SQLITE_OK else {
-                throw SQLiteError.bind(message: errorMessage)
-            }
-            
-            var results = [SearchResult]()
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                let chunkId   = String(cString: sqlite3_column_text(stmt, 0))
-                let threadId  = String(cString: sqlite3_column_text(stmt, 1))
-                let distance  = sqlite3_column_double(stmt, 2)
-                
-                let chunks = try getAllChunksByThreadId(threadId)
-                guard let threadChunk = chunks.first(where: { $0.id == chunkId }) else { continue }
-                
-                guard let thread = try findThread(id: threadId) else { continue }
-                let items = try getItemsByThreadId(threadId)
-                
-                results.append(
-                    SearchResult(
-                        threadChunk: threadChunk,
-                        thread: thread,
-                        items: items,
-                        distance: distance
-                    )
-                )
-            }
-            
-            return results
         }
+        
+        let blob = embeddingToBlob(queryEmbedding)
+        let blobIndex = contentTypes.count + 1
+        guard sqlite3_bind_blob(stmt, Int32(blobIndex), blob, Int32(blob.count), nil) == SQLITE_OK else {
+            throw SQLiteError.bind(message: errorMessage)
+        }
+        
+        let limitIndex = contentTypes.count + 2
+        guard sqlite3_bind_int(stmt, Int32(limitIndex), Int32(limit)) == SQLITE_OK else {
+            throw SQLiteError.bind(message: errorMessage)
+        }
+        
+        var results = [SearchResult]()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let chunkId   = String(cString: sqlite3_column_text(stmt, 0))
+            let threadId  = String(cString: sqlite3_column_text(stmt, 1))
+            let distance  = sqlite3_column_double(stmt, 2)
+            
+            let chunks = try getAllChunksByThreadId(threadId)
+            guard let threadChunk = chunks.first(where: { $0.id == chunkId }) else { continue }
+            
+            guard let thread = try findThread(id: threadId) else { continue }
+            let items = try getItemsByThreadId(threadId)
+            
+            results.append(
+                SearchResult(
+                    threadChunk: threadChunk,
+                    thread: thread,
+                    items: items,
+                    distance: distance
+                )
+            )
+        }
+        
+        return results
+        
     }
     
     // MARK: - "Optimized" Batch Insertions:

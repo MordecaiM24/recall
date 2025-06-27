@@ -9,19 +9,9 @@ import SwiftUI
 
 struct ContentDetailView: View {
     let item: Item
+    @EnvironmentObject var contentService: ContentService
     @Environment(\.dismiss) private var dismiss
     @State private var threadItems: [Item] = []
-    private let contentService: ContentService
-
-    init(item: Item) {
-        self.item = item
-        do {
-            self.contentService = try ContentService()
-        } catch {
-            // Handle error appropriately in a real app
-            fatalError("Failed to initialize ContentService: \(error)")
-        }
-    }
 
     var body: some View {
         NavigationView {

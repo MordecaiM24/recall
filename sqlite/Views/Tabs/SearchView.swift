@@ -14,9 +14,10 @@ struct SearchView: View {
     @State private var selectedContentTypes: Set<ContentType> = Set(ContentType.allCases)
     @State private var isLoading = false
     @State private var showingFilters = false
+    @FocusState private var isTextFieldFocused: Bool
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 // search bar and filters
                 VStack(spacing: 12) {
@@ -29,6 +30,8 @@ struct SearchView: View {
                             .onSubmit {
                                 performSearch()
                             }
+                            .focused($isTextFieldFocused)
+
                         
                         if !searchText.isEmpty {
                             Button(action: { searchText = "" }) {
@@ -95,13 +98,11 @@ struct SearchView: View {
             }
             .navigationTitle("search")
             .navigationBarTitleDisplayMode(.inline)
+            .onTapGesture {
+                isTextFieldFocused = false
+            }
         }
         .animation(.easeInOut(duration: 0.2), value: showingFilters)
-//        .onChange(of: searchText) { newValue in
-//            if newValue.isEmpty {
-//                searchResults = []
-//            }
-//        }
     }
     
     private func performSearch() {

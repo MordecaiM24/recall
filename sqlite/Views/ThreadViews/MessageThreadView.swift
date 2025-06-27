@@ -10,9 +10,16 @@ import SwiftUI
 struct MessageBubble: View {
     let message: Message
     let isLastInGroup: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    
     
     private let outgoingBubbleColor = Color(red: 0.03921568627, green: 0.5176470588, blue: 1)
-    private let incomingBubbleColor = Color(red: 0.1490196078, green: 0.1490196078, blue: 0.1607843137)
+    private var incomingBubbleColor: Color {
+        colorScheme == .dark ?
+        Color(red: 0.149, green: 0.149, blue: 0.161) :
+        Color(red: 0.847, green: 0.847, blue: 0.847)
+    }
+    
     
     var body: some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -50,12 +57,15 @@ struct MessageBubble: View {
     private var incomingBubbleView: some View {
         ZStack(alignment: .bottomLeading) {
             if isLastInGroup {
+                colorScheme == .dark ?
                 Image("incomingTail")
+                    .padding(EdgeInsets(top: 0, leading: -5, bottom: -2, trailing: 0)) :
+                Image("incomingTailLight")
                     .padding(EdgeInsets(top: 0, leading: -5, bottom: -2, trailing: 0))
             }
             Text(message.text)
                 .font(.body)
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(
@@ -65,7 +75,7 @@ struct MessageBubble: View {
         }
         .fixedSize(horizontal: false, vertical: true)
     }
-
+    
 }
 
 struct DateSeparator: View {
