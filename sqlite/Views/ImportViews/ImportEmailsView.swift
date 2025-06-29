@@ -139,6 +139,8 @@ struct ImportEmailsView: View {
                 let data = try Data(contentsOf: url)
                 let emailData = try JSONDecoder().decode([EmailImportData].self, from: data)
                 
+                print("got email data")
+                
                 let emails = emailData.map { emailInfo in
                     Email(
                         id: UUID().uuidString,
@@ -155,6 +157,8 @@ struct ImportEmailsView: View {
                     )
                 }
                 
+                print("data shows \(emails.count) emails")
+                print("attempting to import emails")
                 let importedIds = try await contentService.importEmails(emails)
                 
                 await MainActor.run {
@@ -166,6 +170,7 @@ struct ImportEmailsView: View {
             } catch {
                 await MainActor.run {
                     isImporting = false
+                    
                     importError = "failed to import emails: \(error.localizedDescription)"
                 }
             }

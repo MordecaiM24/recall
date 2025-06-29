@@ -367,6 +367,7 @@ final class SQLiteService {
     
     func insertEmails(_ emails: [Email]) throws -> [String] {
         return try sync {
+            print("making sql")
             let sql = """
                 INSERT INTO Email (id, original_id, thread_id, subject, sender, recipient, date, content, labels, snippet, timestamp, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
@@ -381,30 +382,69 @@ final class SQLiteService {
                 throw SQLiteError.prepare(message: errorMessage)
             }
             let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            print("binding \(emails.count) emails")
             for email in emails {
+                print("starting bind")
                 sqlite3_reset(stmt)
                 sqlite3_clear_bindings(stmt)
                 let labelsJSON = try JSONSerialization.data(withJSONObject: email.labels)
+                print("got labels")
                 let labelsString = String(data: labelsJSON, encoding: .utf8) ?? "[]"
-                guard
-                    sqlite3_bind_text(stmt, 1, email.id, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: email.date), -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK,
-                    sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK,
-                    sqlite3_bind_text(stmt, 12, ISO8601DateFormatter().string(from: email.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK
-                else {
-                    throw SQLiteError.bind(message: errorMessage)
+                
+                guard sqlite3_bind_text(stmt, 1, email.id, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.id")
+                   throw SQLiteError.bind(message: "failed binding email.id")
+                }
+                guard sqlite3_bind_text(stmt, 2, email.originalId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.originalId")
+                   throw SQLiteError.bind(message: "failed binding email.originalId")
+                }
+                guard sqlite3_bind_text(stmt, 3, email.threadId, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.threadId")
+                   throw SQLiteError.bind(message: "failed binding email.threadId")
+                }
+                guard sqlite3_bind_text(stmt, 4, email.subject, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.subject")
+                   throw SQLiteError.bind(message: "failed binding email.subject")
+                }
+                guard sqlite3_bind_text(stmt, 5, email.sender, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.sender")
+                   throw SQLiteError.bind(message: "failed binding email.sender")
+                }
+                guard sqlite3_bind_text(stmt, 6, email.recipient, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.recipient")
+                   throw SQLiteError.bind(message: "failed binding email.recipient")
+                }
+                guard sqlite3_bind_text(stmt, 7, ISO8601DateFormatter().string(from: email.date), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.date")
+                   throw SQLiteError.bind(message: "failed binding email.date")
+                }
+                guard sqlite3_bind_text(stmt, 8, email.content, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.content")
+                   throw SQLiteError.bind(message: "failed binding email.content")
+                }
+                guard sqlite3_bind_text(stmt, 9, labelsString, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding labelsString")
+                   throw SQLiteError.bind(message: "failed binding labelsString")
+                }
+                guard sqlite3_bind_text(stmt, 10, email.snippet, -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.snippet")
+                   throw SQLiteError.bind(message: "failed binding email.snippet")
+                }
+                guard sqlite3_bind_int64(stmt, 11, email.timestamp) == SQLITE_OK else {
+                   print("failed binding email.timestamp")
+                   throw SQLiteError.bind(message: "failed binding email.timestamp")
+                }
+                guard sqlite3_bind_text(stmt, 12, ISO8601DateFormatter().string(from: email.createdAt), -1, SQLITE_TRANSIENT) == SQLITE_OK else {
+                   print("failed binding email.createdAt")
+                   throw SQLiteError.bind(message: "failed binding email.createdAt")
                 }
                 guard sqlite3_step(stmt) == SQLITE_DONE else {
-                    throw SQLiteError.step(message: errorMessage)
+                   print("failed sqlite3_step")
+                   throw SQLiteError.step(message: errorMessage)
                 }
+                
+                print("currently prepared \(insertedIds.count) emails")
                 insertedIds.append(email.id)
             }
             try commitTransaction()
