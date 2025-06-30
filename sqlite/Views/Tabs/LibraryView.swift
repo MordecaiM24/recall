@@ -35,7 +35,7 @@ struct LibraryView: View {
             content = content.filter { $0.type == selectedType }
         }
         
-        // filter by search text
+        // filter by search text. not a semantic search in this tab.
         if !searchText.isEmpty {
             let searchLower = searchText.lowercased()
             content = content.filter {
@@ -62,150 +62,153 @@ struct LibraryView: View {
     }
     
     var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // filters and search
-                VStack(spacing: 12) {
-                    // search bar
-                    HStack {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundColor(.secondary)
-                        
-                        TextField("Search library...", text: $searchText)
-                            .textFieldStyle(.plain)
-                            .focused($isTextFieldFocused)
-                        
-                        if !searchText.isEmpty {
-                            Button(action: { searchText = "" }) {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundColor(.secondary)
+        ZStack {
+            NavigationView {
+                VStack(spacing: 0) {
+                    // filters and search
+                    VStack(spacing: 12) {
+                        // search bar
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundColor(.secondary)
+                            
+                            TextField("Search library...", text: $searchText)
+                                .textFieldStyle(.plain)
+                                .focused($isTextFieldFocused)
+                            
+                            if !searchText.isEmpty {
+                                Button(action: { searchText = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color(.systemGray6))
-                    .cornerRadius(10)
-                    
-                    // filters with counts
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            // all content filter
-                            Button(action: { selectedContentType = nil }) {
-                                HStack(spacing: 4) {
-                                    Text("All")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(selectedContentType == nil ? Color.blue : Color(.systemGray5))
-                                .foregroundColor(selectedContentType == nil ? .white : .primary)
-                                .cornerRadius(16)
-                            }
-                            .buttonStyle(.plain)
-                            
-                            ForEach(ContentType.allCases, id: \.self) { type in
-                                Button(action: { selectedContentType = type }) {
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(10)
+                        
+                        // filters with counts
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                // all content filter
+                                Button(action: { selectedContentType = nil }) {
                                     HStack(spacing: 4) {
-                                        Image(systemName: type.icon)
-                                            .font(.caption)
-                                        Text(type.displayName)
+                                        Text("All")
                                             .font(.caption)
                                             .fontWeight(.medium)
-                                        
-                                        if let count = contentCounts[type], count > 0 {
-                                            Text("(\(count))")
-                                                .font(.caption2)
-                                                .opacity(0.7)
-                                        }
                                     }
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
-                                    .background(selectedContentType == type ? Color.blue : Color(.systemGray5))
-                                    .foregroundColor(selectedContentType == type ? .white : .primary)
+                                    .background(selectedContentType == nil ? Color.blue : Color(.systemGray5))
+                                    .foregroundColor(selectedContentType == nil ? .white : .primary)
                                     .cornerRadius(16)
                                 }
                                 .buttonStyle(.plain)
-                            }
-                            
-                            Divider()
-                                .frame(height: 20)
-                            
-                            // sort picker
-                            Menu {
-                                ForEach(SortOption.allCases, id: \.self) { option in
-                                    Button(action: { sortOption = option }) {
-                                        HStack {
-                                            Text(option.rawValue)
-                                            if sortOption == option {
-                                                Image(systemName: "checkmark")
+                                
+                                ForEach(ContentType.allCases, id: \.self) { type in
+                                    Button(action: { selectedContentType = type }) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: type.icon)
+                                                .font(.caption)
+                                            Text(type.displayName)
+                                                .font(.caption)
+                                                .fontWeight(.medium)
+                                            
+                                            if let count = contentCounts[type], count > 0 {
+                                                Text("(\(count))")
+                                                    .font(.caption2)
+                                                    .opacity(0.7)
+                                            }
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(selectedContentType == type ? Color.blue : Color(.systemGray5))
+                                        .foregroundColor(selectedContentType == type ? .white : .primary)
+                                        .cornerRadius(16)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                
+                                Divider()
+                                    .frame(height: 20)
+                                
+                                // sort picker
+                                Menu {
+                                    ForEach(SortOption.allCases, id: \.self) { option in
+                                        Button(action: { sortOption = option }) {
+                                            HStack {
+                                                Text(option.rawValue)
+                                                if sortOption == option {
+                                                    Image(systemName: "checkmark")
+                                                }
                                             }
                                         }
                                     }
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "arrow.up.arrow.down")
+                                            .font(.caption)
+                                        Text(sortOption.rawValue)
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Color(.systemGray5))
+                                    .foregroundColor(.primary)
+                                    .cornerRadius(16)
                                 }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "arrow.up.arrow.down")
-                                        .font(.caption)
-                                    Text(sortOption.rawValue)
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(Color(.systemGray5))
-                                .foregroundColor(.primary)
-                                .cornerRadius(16)
                             }
+                            .padding(.horizontal)
                         }
-                        .padding(.horizontal)
+                    }
+                    .padding()
+                    .background(Color(.systemBackground))
+                    
+                    Divider()
+                    
+                    // content list with pagination
+                    if contentService.isLoading && allThreads.isEmpty {
+                        VStack(spacing: 16) {
+                            Spacer()
+                            ProgressView()
+                            Text("loading library...")
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                    } else if allThreads.isEmpty {
+                        EmptyLibraryView()
+                    } else if filteredAndSortedContent.isEmpty {
+                        NoResultsLibraryView(hasFilters: selectedContentType != nil || !searchText.isEmpty)
+                    } else {
+                        PaginatedLibraryContentList(
+                            content: filteredAndSortedContent
+                        )
                     }
                 }
-                .padding()
-                .background(Color(.systemBackground))
-                
-                Divider()
-                
-                // content list with pagination
-                if contentService.isLoading && allThreads.isEmpty {
-                    VStack(spacing: 16) {
-                        Spacer()
-                        ProgressView()
-                        Text("loading library...")
-                            .foregroundColor(.secondary)
-                        Spacer()
+                .navigationTitle("Library")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        EditButton()
                     }
-                } else if allThreads.isEmpty {
-                    EmptyLibraryView()
-                } else if filteredAndSortedContent.isEmpty {
-                    NoResultsLibraryView(hasFilters: selectedContentType != nil || !searchText.isEmpty)
-                } else {
-                    PaginatedLibraryContentList(
-                        content: filteredAndSortedContent
-                    )
-                }
-            }
-            .navigationTitle("Library")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    EditButton()
+                    
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(action: { refresh() }) {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .disabled(contentService.isLoading)
+                    }
                 }
                 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(action: { refresh() }) {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(contentService.isLoading)
+                .refreshable {
+                    refresh()
                 }
             }
-            .onTapGesture {
-                isTextFieldFocused = false
-            }
-            .refreshable {
-                refresh()
-            }
+        }
+        .onTapGesture {
+            isTextFieldFocused = false
         }
         .task {
             await initialLoad()
@@ -323,11 +326,6 @@ struct LibraryItemRow: View {
         .swipeActions {
             Button(role: .destructive) {
                 Task {
-                    // try? await contentService.deleteContent(
-                    //     type: content.type,
-                    //     id: content.id
-                    // )
-                    
                     reload()
                 }
             } label: {
@@ -347,11 +345,11 @@ struct EmptyLibraryView: View {
                 .foregroundColor(.secondary)
             
             VStack(spacing: 8) {
-                Text("library is empty")
+                Text("Library is empty")
                     .font(.title2)
                     .fontWeight(.semibold)
                 
-                Text("import some messages, emails, notes, or documents to getget started")
+                Text("Import some messages, emails, notes, or documents to get started")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -375,11 +373,11 @@ struct NoResultsLibraryView: View {
                 .foregroundColor(.secondary)
             
             VStack(spacing: 8) {
-                Text("no matching content")
+                Text("No matching content")
                     .font(.title2)
                     .fontWeight(.semibold)
                 
-                Text(hasFilters ? "try adjusting your filters or search terms" : "no content matches your search")
+                Text(hasFilters ? "Try adjusting your filters or search terms" : "No content matches your search")
                     .font(.body)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)

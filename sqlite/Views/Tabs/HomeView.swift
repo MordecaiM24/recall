@@ -175,7 +175,7 @@ struct HomeView: View {
         messages.append(userMsg)
         
         // default placeholder assistant message
-        let assistantMsg = ChatMessage(content: "Searching...", isUser: false, status: .searching)
+        let assistantMsg = ChatMessage(content: "", isUser: false, status: .searching)
         messages.append(assistantMsg)
         
         inputText = ""
@@ -189,7 +189,6 @@ struct HomeView: View {
                     searchTool.onSearchStart = { query in
                         await MainActor.run {
                             if let idx = messages.firstIndex(where: { $0.id == assistantMsg.id }) {
-                                messages[idx].content = "Searching for '\(query)'..."
                                 messages[idx].status = .searching
                             }
                         }
@@ -204,7 +203,6 @@ struct HomeView: View {
                                     messages[idx].content = "I couldn't find any content related to '\(query)'. Try adding some documents, messages, emails, or notes first."
                                     messages[idx].status = .complete
                                 } else {
-                                    messages[idx].content = "Found \(results.count) results. Analyzing..."
                                     messages[idx].status = .generating
                                 }
                             }
@@ -216,7 +214,6 @@ struct HomeView: View {
                     threadTool.onThreadStart = { threadId in
                         await MainActor.run {
                             if let idx = messages.firstIndex(where: { $0.id == assistantMsg.id }) {
-                                messages[idx].content = "Pulling full thread..."
                                 messages[idx].status = .pullingThread
                                 messages[idx].toolCalls.append("getFullThread")
                             }
@@ -226,8 +223,6 @@ struct HomeView: View {
                     threadTool.onThreadComplete = { threadId, items in
                         await MainActor.run {
                             if let idx = messages.firstIndex(where: { $0.id == assistantMsg.id }) {
-                                let itemsText = items.isEmpty ? "No items" : "\(items.count) items"
-                                messages[idx].content = "Got thread with \(itemsText). Generating response..."
                                 messages[idx].status = .generating
                             }
                         }
@@ -278,7 +273,7 @@ private struct EmptyStateView: View {
                 Text("Try asking:")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                SampleQuestionView(text: "What did alice say about the project?")
+                SampleQuestionView(text: "What did Alice say about the project?")
                 SampleQuestionView(text: "Show me my emails about that machine learning conference")
                 SampleQuestionView(text: "Who is the lead developer on this project?")
             }
@@ -302,16 +297,18 @@ struct SampleQuestionView: View {
 struct ChatBubbleView: View {
     let message: ChatMessage
     @State private var showingSources = false
-    @State private var ellipsis = ""
-    let timer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
     
     var statusText: String {
         switch message.status {
-        case .searching: return "Searching"
-        case .pullingThread: return "Pulling thread"
-        case .generating: return "Generating"
+        case .searching: return "Searching..."
+        case .pullingThread: return "Pulling thread..."
+        case .generating: return "Thinking..."
         default: return ""
         }
+    }
+    
+    var showStatusEffect: Bool {
+        message.status == .searching || message.status == .pullingThread || message.status == .generating
     }
     
     var body: some View {
@@ -321,12 +318,20 @@ struct ChatBubbleView: View {
             }
             
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 8) {
-                Text(message.content + (message.status == .searching || message.status == .generating || message.status == .pullingThread ? ellipsis : ""))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(message.isUser ? Color.blue : Color(.systemGray5))
-                    .foregroundColor(message.isUser ? .white : .primary)
-                    .cornerRadius(18)
+                if showStatusEffect && !message.isUser {
+                    AppleIntelligenceText(text: statusText)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color(.systemGray5))
+                        .cornerRadius(18)
+                } else if !message.content.isEmpty {
+                    Text(message.content)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(message.isUser ? Color.blue : Color(.systemGray5))
+                        .foregroundColor(message.isUser ? .white : .primary)
+                        .cornerRadius(18)
+                }
                 
                 // show tool usage indicators
                 if !message.toolCalls.isEmpty && (message.status == .complete || message.status == .generating || message.status == .pullingThread) {
@@ -379,77 +384,6 @@ struct ChatBubbleView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showingSources)
-        .onReceive(timer) { _ in
-            if message.status == .searching || message.status == .generating || message.status == .pullingThread {
-                ellipsis = (ellipsis == "..." ? "" : ellipsis + ".")
-            } else {
-                ellipsis = ""
-            }
-        }
-    }
-}
-
-// MARK: - Observable Tool Wrappers
-
-final class ObservableSemanticSearchTool: Tool {
-    let name = "semanticSearch"
-    let description = "Search through documents, emails, messages, and notes using semantic similarity. Finds content based on meaning, not just keywords."
-    
-    private let wrappedTool: SemanticSearchTool
-    private let contentService: ContentService
-    var onSearch: (([SearchResult]) async -> Void)?
-    
-    init(contentService: ContentService) {
-        self.contentService = contentService
-        self.wrappedTool = SemanticSearchTool(contentService: contentService)
-    }
-    
-    @Generable
-    struct Arguments {
-        @Guide(description: "Natural language query to search for based on meaning and context")
-        let query: String
-        
-        @Guide(description: "Maximum number of results to return, between 1 and 10")
-        let limit: Int
-    }
-    
-    func call(arguments: Arguments) async throws -> ToolOutput {
-        // perform actual search to get results for callback
-        let results = try await contentService.search(arguments.query, limit: arguments.limit)
-        await onSearch?(results)
-        
-        // forward to wrapped tool
-        let wrappedArgs = SemanticSearchTool.Arguments(query: arguments.query, limit: arguments.limit)
-        return try await wrappedTool.call(arguments: wrappedArgs)
-    }
-}
-
-final class ObservableGetFullThreadTool: Tool {
-    let name = "getFullThread"
-    let description = "Get the complete conversation thread for an email chain or message conversation. Shows full context."
-    
-    private let wrappedTool: GetFullThreadTool
-    var onThreadPull: ((String) async -> Void)?
-    
-    init(contentService: ContentService) {
-        self.wrappedTool = GetFullThreadTool(contentService: contentService)
-    }
-    
-    @Generable
-    struct Arguments {
-        @Guide(description: "The thread id to retrieve the full conversation for")
-        let threadId: String
-        
-        @Guide(description: "The amount of items in the conversation to find")
-        let itemCount: Int
-    }
-    
-    func call(arguments: Arguments) async throws -> ToolOutput {
-        await onThreadPull?(arguments.threadId)
-        
-        // forward to wrapped tool
-        let wrappedArgs = GetFullThreadTool.Arguments(threadId: arguments.threadId, itemCount: arguments.itemCount)
-        return try await wrappedTool.call(arguments: wrappedArgs)
     }
 }
 

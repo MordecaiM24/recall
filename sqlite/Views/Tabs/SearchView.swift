@@ -25,7 +25,7 @@ struct SearchView: View {
                         Image(systemName: "magnifyingglass")
                             .foregroundColor(.secondary)
                         
-                        TextField("search your content...", text: $searchText)
+                        TextField("Search your content...", text: $searchText)
                             .textFieldStyle(.plain)
                             .onSubmit {
                                 performSearch()
@@ -84,7 +84,7 @@ struct SearchView: View {
                     VStack(spacing: 16) {
                         Spacer()
                         ProgressView()
-                        Text("searching...")
+                        Text("Searching...")
                             .foregroundColor(.secondary)
                         Spacer()
                     }
@@ -96,7 +96,7 @@ struct SearchView: View {
                     SearchResultsList(results: searchResults)
                 }
             }
-            .navigationTitle("search")
+            .navigationTitle("Search")
             .navigationBarTitleDisplayMode(.inline)
             .onTapGesture {
                 isTextFieldFocused = false
