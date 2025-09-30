@@ -2,6 +2,9 @@
 
 Privacy-first, on-device semantic search and chat over your personal content (emails, messages, documents, and notes). Recall embeds your data locally using a Core ML sentence-transformer and stores vectors in SQLite with the sqlite-vec extension. A local assistant (Apple Intelligence Foundation Models) uses tools to search, cite sources, and expand full threads.
 
+
+## [Check out a demo!](https://www.linkedin.com/posts/mordecaim_i-recently-built-a-personal-ai-assistant-activity-7358489394686611457-vLY9?utm_source=share&utm_medium=member_desktop&rcm=ACoAADRxJy8BuW_A9tIfzNPTadCH1Ksx3ZCEwr0)
+
 ## Highlights
 - On-device embeddings with Core ML (`all-MiniLM-L6-v2`, 384 dims)
 - Vector search via SQLite + `sqlite-vec` (no server)
